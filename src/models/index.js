@@ -1,0 +1,22 @@
+// Compatibility barrel only. Each Mongoose model lives in its own file.
+export { User } from './user.js';
+export { Session } from './session.js';
+export { PasswordReset } from './passwordReset.js';
+export { Person } from './person.js';
+export { Vehicle } from './vehicle.js';
+export { OwnershipPeriod } from './ownershipPeriod.js';
+export { Enquiry } from './enquiry.js';
+export { Document } from './document.js';
+export { DocumentRequirement } from './documentRequirement.js';
+export { Inspection } from './inspection.js';
+export { InspectionTemplate } from './inspectionTemplate.js';
+export { ParkingSlot } from './parkingSlot.js';
+export { ParkingZone } from './parkingZone.js';
+export { Movement } from './movement.js';
+export { Acquisition } from './acquisition.js';
+export { AcquisitionOffer } from './acquisitionOffer.js';
+export { WorkOrder } from './workOrder.js';
+export { QualityCheck } from './qualityCheck.js';
+export { Sale } from './sale.js';
+export { Notification } from './notification.js';
+export { Audit } from './audit.js';
