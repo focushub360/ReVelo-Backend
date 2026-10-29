@@ -1,2 +1,45 @@
-import mongoose from 'mongoose';import { stamped,activitySchema } from './activity.js';
-export const Document=mongoose.model('Document',new mongoose.Schema({vehicle:{type:mongoose.Schema.Types.ObjectId,ref:'Vehicle',required:true,index:true},enquiry:{type:mongoose.Schema.Types.ObjectId,ref:'Enquiry'},person:{type:mongoose.Schema.Types.ObjectId,ref:'Person'},category:{type:String,required:true,index:true},status:{type:String,enum:['Not Submitted','Submitted','Under Review','Verified','Mismatch','Expired','Rejected','On Hold'],default:'Submitted',index:true},storageKey:{type:String,required:true,unique:true},originalName:String,extension:String,mimeType:String,size:Number,submittedAt:{type:Date,default:Date.now},expiryDate:Date,submittedBy:{type:mongoose.Schema.Types.ObjectId,ref:'User'},reviewer:{type:mongoose.Schema.Types.ObjectId,ref:'User'},reviewedAt:Date,verificationSource:String,verificationEvidence:String,reviewReason:String,followUpAction:String,consentRecorded:{type:Boolean,default:false},history:[activitySchema]},stamped));
+import mongoose from 'mongoose';
+import { stamped, activitySchema } from './activity.js';
+export const Document = mongoose.model(
+  'Document',
+  new mongoose.Schema(
+    {
+      vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true, index: true },
+      enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry' },
+      person: { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },
+      category: { type: String, required: true, index: true },
+      status: {
+        type: String,
+        enum: [
+          'Not Submitted',
+          'Submitted',
+          'Under Review',
+          'Verified',
+          'Mismatch',
+          'Expired',
+          'Rejected',
+          'On Hold',
+        ],
+        default: 'Submitted',
+        index: true,
+      },
+      storageKey: { type: String, required: true, unique: true },
+      originalName: String,
+      extension: String,
+      mimeType: String,
+      size: Number,
+      submittedAt: { type: Date, default: Date.now },
+      expiryDate: Date,
+      submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      reviewer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      reviewedAt: Date,
+      verificationSource: String,
+      verificationEvidence: String,
+      reviewReason: String,
+      followUpAction: String,
+      consentRecorded: { type: Boolean, default: false },
+      history: [activitySchema],
+    },
+    stamped
+  )
+);

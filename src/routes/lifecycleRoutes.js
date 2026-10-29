@@ -1,2 +1,29 @@
-import { Router } from 'express';import { Vehicle } from '../models/vehicle.js';import { Acquisition } from '../models/acquisition.js';import { Sale } from '../models/sale.js';import { permit } from '../middleware/permit.js';import { httpError } from '../utils/core.js';import { readiness } from '../services/lifecycleService.js';
-const router=Router();router.get('/vehicles/:id/lifecycle-readiness',permit('vehicles'),async(req,res,next)=>{try{const vehicle=await Vehicle.findById(req.params.id);if(!vehicle)throw httpError(404,'Vehicle not found');const [checks,acquisition,sale]=await Promise.all([readiness(vehicle.id),Acquisition.findOne({vehicle:vehicle.id}),Sale.findOne({vehicle:vehicle.id,status:{$nin:['Cancelled','Closed']}})]);res.json({vehicleId:vehicle.id,lifecycle:vehicle.lifecycle,acquisitionStatus:acquisition?.status||'None',activeSale:!!sale,checks})}catch(error){next(error)}});export default router;
+import { Router } from 'express';
+import { Vehicle } from '../models/vehicle.js';
+import { Acquisition } from '../models/acquisition.js';
+import { Sale } from '../models/sale.js';
+import { permit } from '../middleware/permit.js';
+import { httpError } from '../utils/core.js';
+import { readiness } from '../services/lifecycleService.js';
+const router = Router();
+router.get('/vehicles/:id/lifecycle-readiness', permit('vehicles'), async (req, res, next) => {
+  try {
+    const vehicle = await Vehicle.findById(req.params.id);
+    if (!vehicle) throw httpError(404, 'Vehicle not found');
+    const [checks, acquisition, sale] = await Promise.all([
+      readiness(vehicle.id),
+      Acquisition.findOne({ vehicle: vehicle.id }),
+      Sale.findOne({ vehicle: vehicle.id, status: { $nin: ['Cancelled', 'Closed'] } }),
+    ]);
+    res.json({
+      vehicleId: vehicle.id,
+      lifecycle: vehicle.lifecycle,
+      acquisitionStatus: acquisition?.status || 'None',
+      activeSale: !!sale,
+      checks,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+export default router;

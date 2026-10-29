@@ -1,1 +1,6 @@
-export function csrf(req,res,next){if(['GET','HEAD','OPTIONS'].includes(req.method))return next();if(req.get('x-csrf-token')!==req.session?.csrfToken)return res.status(403).json({error:{message:'Invalid CSRF token'}});next()}
+export function csrf(req, res, next) {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
+  if (req.get('x-csrf-token') !== req.session?.csrfToken)
+    return res.status(403).json({ error: { message: 'Invalid CSRF token' } });
+  next();
+}

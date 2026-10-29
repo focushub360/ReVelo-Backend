@@ -1,18 +1,251 @@
-import { Router } from 'express';import mongoose from 'mongoose';import { z } from 'zod';
-import { ParkingZone } from '../models/parkingZone.js';import { ParkingSlot } from '../models/parkingSlot.js';import { Movement } from '../models/movement.js';import { Vehicle } from '../models/vehicle.js';import { permit } from '../middleware/permit.js';import { httpError } from '../utils/core.js';import { paginatedQuery } from '../utils/pagination.js';
+import { Router } from 'express';
+import mongoose from 'mongoose';
+import { z } from 'zod';
+import { ParkingZone } from '../models/parkingZone.js';
+import { ParkingSlot } from '../models/parkingSlot.js';
+import { Movement } from '../models/movement.js';
+import { Vehicle } from '../models/vehicle.js';
+import { permit } from '../middleware/permit.js';
+import { httpError } from '../utils/core.js';
+import { paginatedQuery } from '../utils/pagination.js';
 
-const router=Router();const statuses=['Available','Reserved','Occupied','Blocked','Maintenance'];
-const slotInput=z.object({code:z.string().min(2).max(30),zone:z.string().min(1),section:z.string().max(30).optional(),row:z.string().min(1).max(30),number:z.coerce.number().int().min(1).optional(),type:z.enum(['parking','inspection','road-test','workshop','delivery']).optional(),capacity:z.coerce.number().int().min(1).max(10).optional(),vehicleConstraints:z.array(z.string()).optional(),status:z.enum(statuses).optional()});
-router.get('/parking/zones',permit('parking'),async(req,res,next)=>{try{res.json(await ParkingZone.find().sort({name:1}))}catch(error){next(error)}});
-router.post('/parking/zones',permit('settings'),async(req,res,next)=>{try{res.status(201).json(await ParkingZone.create(z.object({name:z.string().min(2),code:z.string().min(2).max(12),description:z.string().optional()}).parse(req.body)))}catch(error){next(error)}});
-router.patch('/parking/zones/:id',permit('settings'),async(req,res,next)=>{try{const zone=await ParkingZone.findByIdAndUpdate(req.params.id,z.object({name:z.string().min(2).optional(),description:z.string().optional(),enabled:z.boolean().optional()}).parse(req.body),{new:true});if(!zone)throw httpError(404,'Parking zone not found');res.json(zone)}catch(error){next(error)}});
-router.get('/parking/slots',permit('parking'),paginatedQuery(ParkingSlot));
-router.post('/parking/slots',permit('parking'),async(req,res,next)=>{try{const input=slotInput.parse(req.body);const slot=await ParkingSlot.create(input);res.status(201).json(slot)}catch(error){next(error)}});
-router.patch('/parking/slots/:id',permit('parking'),async(req,res,next)=>{try{const slot=await ParkingSlot.findById(req.params.id);if(!slot)throw httpError(404,'Parking slot not found');if(['Occupied','Reserved'].includes(slot.status)&&(req.body.enabled===false||req.body.status==='Available'))throw httpError(409,'Release the active assignment before changing this slot');const update=slotInput.partial().extend({enabled:z.boolean().optional()}).parse(req.body);Object.assign(slot,update);await slot.save();res.json(slot)}catch(error){next(error)}});
-router.delete('/parking/slots/:id',permit('parking'),async(req,res,next)=>{try{const slot=await ParkingSlot.findById(req.params.id);if(!slot)throw httpError(404,'Parking slot not found');if(['Occupied','Reserved'].includes(slot.status))throw httpError(409,'An occupied or reserved slot cannot be removed');await slot.deleteOne();res.status(204).end()}catch(error){next(error)}});
-router.get('/parking/vehicles/:vehicleId/history',permit('parking'),async(req,res,next)=>{try{res.json(await Movement.find({vehicle:req.params.vehicleId}).populate('from to by').sort({createdAt:-1}))}catch(error){next(error)}});
-router.post('/parking/reserve',permit('parking'),async(req,res,next)=>{try{const {vehicle,slot,reason,reservedUntil}=z.object({vehicle:z.string(),slot:z.string(),reason:z.string().max(1000).optional(),reservedUntil:z.coerce.date().optional()}).parse(req.body);const target=await ParkingSlot.findOneAndUpdate({_id:slot,status:'Available',enabled:true},{$set:{status:'Reserved',reservationVehicle:vehicle,reservedUntil:reservedUntil||new Date(Date.now()+2*3600e3)}},{new:true});if(!target)throw httpError(409,'This slot is no longer available');await Movement.create({vehicle,to:target.id,action:'Reserve',reason,by:req.user.id});res.json(target)}catch(error){next(error)}});
-router.post('/parking/confirm',permit('parking'),async(req,res,next)=>{try{const {vehicle,slot,reason}=z.object({vehicle:z.string(),slot:z.string(),reason:z.string().max(1000).optional()}).parse(req.body);const vehicleRecord=await Vehicle.findById(vehicle);if(!vehicleRecord)throw httpError(404,'Vehicle not found');if(vehicleRecord.currentLocation&&String(vehicleRecord.currentLocation)!==slot)throw httpError(409,'Vehicle already has an active physical location');const target=await ParkingSlot.findOneAndUpdate({_id:slot,status:{$in:['Available','Reserved']},$or:[{reservationVehicle:{$exists:false}},{reservationVehicle:null},{reservationVehicle:vehicle}]},{$set:{status:'Occupied',activeVehicle:vehicle,occupiedAt:new Date()},$unset:{reservationVehicle:1,reservedUntil:1}},{new:true});if(!target)throw httpError(409,'This slot cannot be occupied');await Vehicle.findByIdAndUpdate(vehicle,{$set:{currentLocation:target.id}});await Movement.create({vehicle,to:target.id,action:'Occupy',reason,by:req.user.id,physicalConfirmation:true});res.json(target)}catch(error){next(error)}});
-router.post('/parking/release',permit('parking'),async(req,res,next)=>{try{const {vehicle,reason}=z.object({vehicle:z.string(),reason:z.string().min(1).max(1000)}).parse(req.body);const vehicleRecord=await Vehicle.findById(vehicle);if(!vehicleRecord?.currentLocation)throw httpError(404,'Vehicle has no active location');const slot=await ParkingSlot.findOneAndUpdate({_id:vehicleRecord.currentLocation,activeVehicle:vehicle,status:'Occupied'},{$set:{status:'Available'},$unset:{activeVehicle:1,occupiedAt:1}},{new:true});if(!slot)throw httpError(409,'Persisted vehicle location is inconsistent');await Vehicle.findByIdAndUpdate(vehicle,{$unset:{currentLocation:1}});await Movement.create({vehicle,from:slot.id,action:'Release',reason,by:req.user.id,physicalConfirmation:true});res.json(slot)}catch(error){next(error)}});
-router.post('/parking/relocate',permit('parking'),async(req,res,next)=>{try{const {vehicle,to,reason}=z.object({vehicle:z.string(),to:z.string(),reason:z.string().min(1).max(1000)}).parse(req.body);const record=await Vehicle.findById(vehicle);if(!record?.currentLocation)throw httpError(404,'Vehicle has no active location');const target=await ParkingSlot.findOneAndUpdate({_id:to,status:'Available',enabled:true},{$set:{status:'Occupied',activeVehicle:vehicle,occupiedAt:new Date()}},{new:true});if(!target)throw httpError(409,'Destination is no longer available');const source=await ParkingSlot.findOneAndUpdate({_id:record.currentLocation,activeVehicle:vehicle,status:'Occupied'},{$set:{status:'Available'},$unset:{activeVehicle:1,occupiedAt:1}},{new:true});if(!source){await ParkingSlot.findByIdAndUpdate(target.id,{$set:{status:'Available'},$unset:{activeVehicle:1,occupiedAt:1}});throw httpError(409,'Source slot changed before relocation completed')}await Vehicle.findByIdAndUpdate(vehicle,{$set:{currentLocation:target.id}});await Movement.create({vehicle,from:source.id,to:target.id,action:'Relocate',reason,by:req.user.id,physicalConfirmation:true});res.json({from:source,to:target})}catch(error){next(error)}});
+const router = Router();
+const statuses = ['Available', 'Reserved', 'Occupied', 'Blocked', 'Maintenance'];
+const slotInput = z.object({
+  code: z.string().min(2).max(30),
+  zone: z.string().min(1),
+  section: z.string().max(30).optional(),
+  row: z.string().min(1).max(30),
+  number: z.coerce.number().int().min(1).optional(),
+  type: z.enum(['parking', 'inspection', 'road-test', 'workshop', 'delivery']).optional(),
+  capacity: z.coerce.number().int().min(1).max(10).optional(),
+  vehicleConstraints: z.array(z.string()).optional(),
+  status: z.enum(statuses).optional(),
+});
+router.get('/parking/zones', permit('parking'), async (req, res, next) => {
+  try {
+    res.json(await ParkingZone.find().sort({ name: 1 }));
+  } catch (error) {
+    next(error);
+  }
+});
+router.post('/parking/zones', permit('settings'), async (req, res, next) => {
+  try {
+    res.status(201).json(
+      await ParkingZone.create(
+        z
+          .object({
+            name: z.string().min(2),
+            code: z.string().min(2).max(12),
+            description: z.string().optional(),
+          })
+          .parse(req.body)
+      )
+    );
+  } catch (error) {
+    next(error);
+  }
+});
+router.patch('/parking/zones/:id', permit('settings'), async (req, res, next) => {
+  try {
+    const zone = await ParkingZone.findByIdAndUpdate(
+      req.params.id,
+      z
+        .object({
+          name: z.string().min(2).optional(),
+          description: z.string().optional(),
+          enabled: z.boolean().optional(),
+        })
+        .parse(req.body),
+      { new: true }
+    );
+    if (!zone) throw httpError(404, 'Parking zone not found');
+    res.json(zone);
+  } catch (error) {
+    next(error);
+  }
+});
+router.get('/parking/slots', permit('parking'), paginatedQuery(ParkingSlot));
+router.post('/parking/slots', permit('parking'), async (req, res, next) => {
+  try {
+    const input = slotInput.parse(req.body);
+    const slot = await ParkingSlot.create(input);
+    res.status(201).json(slot);
+  } catch (error) {
+    next(error);
+  }
+});
+router.patch('/parking/slots/:id', permit('parking'), async (req, res, next) => {
+  try {
+    const slot = await ParkingSlot.findById(req.params.id);
+    if (!slot) throw httpError(404, 'Parking slot not found');
+    if (
+      ['Occupied', 'Reserved'].includes(slot.status) &&
+      (req.body.enabled === false || req.body.status === 'Available')
+    )
+      throw httpError(409, 'Release the active assignment before changing this slot');
+    const update = slotInput.partial().extend({ enabled: z.boolean().optional() }).parse(req.body);
+    Object.assign(slot, update);
+    await slot.save();
+    res.json(slot);
+  } catch (error) {
+    next(error);
+  }
+});
+router.delete('/parking/slots/:id', permit('parking'), async (req, res, next) => {
+  try {
+    const slot = await ParkingSlot.findById(req.params.id);
+    if (!slot) throw httpError(404, 'Parking slot not found');
+    if (['Occupied', 'Reserved'].includes(slot.status))
+      throw httpError(409, 'An occupied or reserved slot cannot be removed');
+    await slot.deleteOne();
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+router.get('/parking/vehicles/:vehicleId/history', permit('parking'), async (req, res, next) => {
+  try {
+    res.json(
+      await Movement.find({ vehicle: req.params.vehicleId }).populate('from to by').sort({ createdAt: -1 })
+    );
+  } catch (error) {
+    next(error);
+  }
+});
+router.post('/parking/reserve', permit('parking'), async (req, res, next) => {
+  try {
+    const { vehicle, slot, reason, reservedUntil } = z
+      .object({
+        vehicle: z.string(),
+        slot: z.string(),
+        reason: z.string().max(1000).optional(),
+        reservedUntil: z.coerce.date().optional(),
+      })
+      .parse(req.body);
+    const target = await ParkingSlot.findOneAndUpdate(
+      { _id: slot, status: 'Available', enabled: true },
+      {
+        $set: {
+          status: 'Reserved',
+          reservationVehicle: vehicle,
+          reservedUntil: reservedUntil || new Date(Date.now() + 2 * 3600e3),
+        },
+      },
+      { new: true }
+    );
+    if (!target) throw httpError(409, 'This slot is no longer available');
+    await Movement.create({ vehicle, to: target.id, action: 'Reserve', reason, by: req.user.id });
+    res.json(target);
+  } catch (error) {
+    next(error);
+  }
+});
+router.post('/parking/confirm', permit('parking'), async (req, res, next) => {
+  try {
+    const { vehicle, slot, reason } = z
+      .object({ vehicle: z.string(), slot: z.string(), reason: z.string().max(1000).optional() })
+      .parse(req.body);
+    const vehicleRecord = await Vehicle.findById(vehicle);
+    if (!vehicleRecord) throw httpError(404, 'Vehicle not found');
+    if (vehicleRecord.currentLocation && String(vehicleRecord.currentLocation) !== slot)
+      throw httpError(409, 'Vehicle already has an active physical location');
+    const target = await ParkingSlot.findOneAndUpdate(
+      {
+        _id: slot,
+        status: { $in: ['Available', 'Reserved'] },
+        $or: [
+          { reservationVehicle: { $exists: false } },
+          { reservationVehicle: null },
+          { reservationVehicle: vehicle },
+        ],
+      },
+      {
+        $set: { status: 'Occupied', activeVehicle: vehicle, occupiedAt: new Date() },
+        $unset: { reservationVehicle: 1, reservedUntil: 1 },
+      },
+      { new: true }
+    );
+    if (!target) throw httpError(409, 'This slot cannot be occupied');
+    await Vehicle.findByIdAndUpdate(vehicle, { $set: { currentLocation: target.id } });
+    await Movement.create({
+      vehicle,
+      to: target.id,
+      action: 'Occupy',
+      reason,
+      by: req.user.id,
+      physicalConfirmation: true,
+    });
+    res.json(target);
+  } catch (error) {
+    next(error);
+  }
+});
+router.post('/parking/release', permit('parking'), async (req, res, next) => {
+  try {
+    const { vehicle, reason } = z
+      .object({ vehicle: z.string(), reason: z.string().min(1).max(1000) })
+      .parse(req.body);
+    const vehicleRecord = await Vehicle.findById(vehicle);
+    if (!vehicleRecord?.currentLocation) throw httpError(404, 'Vehicle has no active location');
+    const slot = await ParkingSlot.findOneAndUpdate(
+      { _id: vehicleRecord.currentLocation, activeVehicle: vehicle, status: 'Occupied' },
+      { $set: { status: 'Available' }, $unset: { activeVehicle: 1, occupiedAt: 1 } },
+      { new: true }
+    );
+    if (!slot) throw httpError(409, 'Persisted vehicle location is inconsistent');
+    await Vehicle.findByIdAndUpdate(vehicle, { $unset: { currentLocation: 1 } });
+    await Movement.create({
+      vehicle,
+      from: slot.id,
+      action: 'Release',
+      reason,
+      by: req.user.id,
+      physicalConfirmation: true,
+    });
+    res.json(slot);
+  } catch (error) {
+    next(error);
+  }
+});
+router.post('/parking/relocate', permit('parking'), async (req, res, next) => {
+  try {
+    const { vehicle, to, reason } = z
+      .object({ vehicle: z.string(), to: z.string(), reason: z.string().min(1).max(1000) })
+      .parse(req.body);
+    const record = await Vehicle.findById(vehicle);
+    if (!record?.currentLocation) throw httpError(404, 'Vehicle has no active location');
+    const target = await ParkingSlot.findOneAndUpdate(
+      { _id: to, status: 'Available', enabled: true },
+      { $set: { status: 'Occupied', activeVehicle: vehicle, occupiedAt: new Date() } },
+      { new: true }
+    );
+    if (!target) throw httpError(409, 'Destination is no longer available');
+    const source = await ParkingSlot.findOneAndUpdate(
+      { _id: record.currentLocation, activeVehicle: vehicle, status: 'Occupied' },
+      { $set: { status: 'Available' }, $unset: { activeVehicle: 1, occupiedAt: 1 } },
+      { new: true }
+    );
+    if (!source) {
+      await ParkingSlot.findByIdAndUpdate(target.id, {
+        $set: { status: 'Available' },
+        $unset: { activeVehicle: 1, occupiedAt: 1 },
+      });
+      throw httpError(409, 'Source slot changed before relocation completed');
+    }
+    await Vehicle.findByIdAndUpdate(vehicle, { $set: { currentLocation: target.id } });
+    await Movement.create({
+      vehicle,
+      from: source.id,
+      to: target.id,
+      action: 'Relocate',
+      reason,
+      by: req.user.id,
+      physicalConfirmation: true,
+    });
+    res.json({ from: source, to: target });
+  } catch (error) {
+    next(error);
+  }
+});
 export default router;

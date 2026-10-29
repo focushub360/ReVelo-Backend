@@ -1,7 +1,137 @@
 import { Router } from 'express';
-import { Vehicle } from '../models/vehicle.js';import { Enquiry } from '../models/enquiry.js';import { Document } from '../models/document.js';import { Inspection } from '../models/inspection.js';import { Movement } from '../models/movement.js';import { Acquisition } from '../models/acquisition.js';import { AcquisitionOffer } from '../models/acquisitionOffer.js';import { WorkOrder } from '../models/workOrder.js';import { QualityCheck } from '../models/qualityCheck.js';import { Sale } from '../models/sale.js';import { ParkingSlot } from '../models/parkingSlot.js';import { permit } from '../middleware/permit.js';import { httpError } from '../utils/core.js';
-const router=Router();
-const csvValue=value=>{const safe=String(value??'').replace(/"/g,'""').replace(/^[=+\-@]/,"'$&");return `"${safe}"`};
-router.get('/vehicles/:id/history',permit('vehicles'),async(req,res,next)=>{try{const vehicle=await Vehicle.findById(req.params.id);if(!vehicle)throw httpError(404,'Vehicle not found');const [enquiries,documents,inspections,movements,acquisition,workOrders,qualityChecks,sales]=await Promise.all([Enquiry.find({vehicle:vehicle.id}),Document.find({vehicle:vehicle.id}),Inspection.find({vehicle:vehicle.id}),Movement.find({vehicle:vehicle.id}),Acquisition.findOne({vehicle:vehicle.id}),WorkOrder.find({vehicle:vehicle.id}),QualityCheck.find({vehicle:vehicle.id}),Sale.find({vehicle:vehicle.id})]);const offers=acquisition?await AcquisitionOffer.find({acquisition:acquisition.id}):[];const events=[];const add=(items,type,recordType,summary)=>items.forEach(item=>events.push({at:item.createdAt,type,recordType,recordId:item.id,summary:summary(item)}));add(enquiries,'Seller / buyer enquiry','Enquiry',x=>x.enquiryCode);add(documents,'Document submitted','Document',x=>`${x.category}: ${x.status}`);add(inspections,'Inspection','Inspection',x=>`${x.kind}: ${x.status}`);add(movements,'Parking movement','Movement',x=>x.action);if(acquisition)events.push({at:acquisition.createdAt,type:'Acquisition',recordType:'Acquisition',recordId:acquisition.id,summary:acquisition.status});add(offers,'Acquisition offer','AcquisitionOffer',x=>`${x.amount}: ${x.status}`);add(workOrders,'Work order','WorkOrder',x=>`${x.workOrderCode}: ${x.status}`);add(qualityChecks,'Quality control','QualityCheck',x=>x.status);add(sales,'Sale','Sale',x=>x.status);events.sort((a,b)=>new Date(b.at)-new Date(a.at));res.json({vehicle,events})}catch(error){next(error)}});
-router.get('/reports/:name',permit('reports'),async(req,res,next)=>{try{const name=req.params.name;const from=req.query.from?new Date(req.query.from):null,to=req.query.to?new Date(`${req.query.to}T23:59:59.999Z`):null;const dateFilter=from||to?{createdAt:{...(from?{$gte:from}:{}),...(to?{$lte:to}:{})}}:{};let rows=[];if(name==='enquiry-conversion')rows=await Enquiry.aggregate([{$match:{...dateFilter,type:'seller'}},{$group:{_id:'$status',count:{$sum:1}}}]);else if(name==='rejected-acquisitions')rows=await Acquisition.aggregate([{$match:{...dateFilter,status:'Rejected'}},{$group:{_id:'$decisionReason',count:{$sum:1}}}]);else if(name==='inspection-defects')rows=await Inspection.aggregate([{$match:dateFilter},{$unwind:'$findings'},{$match:{'findings.result':{$in:['Fail','Critical']}}},{$group:{_id:'$findings.title',count:{$sum:1}}},{$sort:{count:-1}}]);else if(name==='repair-costs')rows=await WorkOrder.aggregate([{$match:dateFilter},{$project:{workOrderCode:1,estimated:{$add:['$estimatedLabour','$estimatedParts']},actual:{$add:['$actualLabour','$actualParts']}}}]);else if(name==='parking-occupancy')rows=await ParkingSlot.aggregate([{$group:{_id:'$status',count:{$sum:1}}}]);else if(name==='profitability')rows=await Sale.aggregate([{$match:{...dateFilter,status:'Closed'}},{$project:{vehicle:1,agreedPrice:1,actualProfit:1,closedAt:1}}]);else if(name==='employee-workload')rows=await WorkOrder.aggregate([{$match:{...dateFilter,status:{$nin:['Completed','Cancelled']}}},{$group:{_id:'$assignedTo',openWorkOrders:{$sum:1}}}]);else throw httpError(404,'Unknown report');if(req.query.format==='csv'){const headers=rows.length?Object.keys(rows[0]):['result'];res.set({'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="revelo-${name}.csv"`});return res.send([headers.map(csvValue).join(','),...rows.map(row=>headers.map(h=>csvValue(typeof row[h]==='object'?JSON.stringify(row[h]):row[h])).join(','))].join('\n'))}res.json({name,rows})}catch(error){next(error)}});
+import { Vehicle } from '../models/vehicle.js';
+import { Enquiry } from '../models/enquiry.js';
+import { Document } from '../models/document.js';
+import { Inspection } from '../models/inspection.js';
+import { Movement } from '../models/movement.js';
+import { Acquisition } from '../models/acquisition.js';
+import { AcquisitionOffer } from '../models/acquisitionOffer.js';
+import { WorkOrder } from '../models/workOrder.js';
+import { QualityCheck } from '../models/qualityCheck.js';
+import { Sale } from '../models/sale.js';
+import { ParkingSlot } from '../models/parkingSlot.js';
+import { permit } from '../middleware/permit.js';
+import { httpError } from '../utils/core.js';
+const router = Router();
+const csvValue = (value) => {
+  const safe = String(value ?? '')
+    .replace(/"/g, '""')
+    .replace(/^[=+\-@]/, "'$&");
+  return `"${safe}"`;
+};
+router.get('/vehicles/:id/history', permit('vehicles'), async (req, res, next) => {
+  try {
+    const vehicle = await Vehicle.findById(req.params.id);
+    if (!vehicle) throw httpError(404, 'Vehicle not found');
+    const [enquiries, documents, inspections, movements, acquisition, workOrders, qualityChecks, sales] =
+      await Promise.all([
+        Enquiry.find({ vehicle: vehicle.id }),
+        Document.find({ vehicle: vehicle.id }),
+        Inspection.find({ vehicle: vehicle.id }),
+        Movement.find({ vehicle: vehicle.id }),
+        Acquisition.findOne({ vehicle: vehicle.id }),
+        WorkOrder.find({ vehicle: vehicle.id }),
+        QualityCheck.find({ vehicle: vehicle.id }),
+        Sale.find({ vehicle: vehicle.id }),
+      ]);
+    const offers = acquisition ? await AcquisitionOffer.find({ acquisition: acquisition.id }) : [];
+    const events = [];
+    const add = (items, type, recordType, summary) =>
+      items.forEach((item) =>
+        events.push({ at: item.createdAt, type, recordType, recordId: item.id, summary: summary(item) })
+      );
+    add(enquiries, 'Seller / buyer enquiry', 'Enquiry', (x) => x.enquiryCode);
+    add(documents, 'Document submitted', 'Document', (x) => `${x.category}: ${x.status}`);
+    add(inspections, 'Inspection', 'Inspection', (x) => `${x.kind}: ${x.status}`);
+    add(movements, 'Parking movement', 'Movement', (x) => x.action);
+    if (acquisition)
+      events.push({
+        at: acquisition.createdAt,
+        type: 'Acquisition',
+        recordType: 'Acquisition',
+        recordId: acquisition.id,
+        summary: acquisition.status,
+      });
+    add(offers, 'Acquisition offer', 'AcquisitionOffer', (x) => `${x.amount}: ${x.status}`);
+    add(workOrders, 'Work order', 'WorkOrder', (x) => `${x.workOrderCode}: ${x.status}`);
+    add(qualityChecks, 'Quality control', 'QualityCheck', (x) => x.status);
+    add(sales, 'Sale', 'Sale', (x) => x.status);
+    events.sort((a, b) => new Date(b.at) - new Date(a.at));
+    res.json({ vehicle, events });
+  } catch (error) {
+    next(error);
+  }
+});
+router.get('/reports/:name', permit('reports'), async (req, res, next) => {
+  try {
+    const name = req.params.name;
+    const from = req.query.from ? new Date(req.query.from) : null,
+      to = req.query.to ? new Date(`${req.query.to}T23:59:59.999Z`) : null;
+    const dateFilter =
+      from || to ? { createdAt: { ...(from ? { $gte: from } : {}), ...(to ? { $lte: to } : {}) } } : {};
+    let rows = [];
+    if (name === 'enquiry-conversion')
+      rows = await Enquiry.aggregate([
+        { $match: { ...dateFilter, type: 'seller' } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]);
+    else if (name === 'rejected-acquisitions')
+      rows = await Acquisition.aggregate([
+        { $match: { ...dateFilter, status: 'Rejected' } },
+        { $group: { _id: '$decisionReason', count: { $sum: 1 } } },
+      ]);
+    else if (name === 'inspection-defects')
+      rows = await Inspection.aggregate([
+        { $match: dateFilter },
+        { $unwind: '$findings' },
+        { $match: { 'findings.result': { $in: ['Fail', 'Critical'] } } },
+        { $group: { _id: '$findings.title', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]);
+    else if (name === 'repair-costs')
+      rows = await WorkOrder.aggregate([
+        { $match: dateFilter },
+        {
+          $project: {
+            workOrderCode: 1,
+            estimated: { $add: ['$estimatedLabour', '$estimatedParts'] },
+            actual: { $add: ['$actualLabour', '$actualParts'] },
+          },
+        },
+      ]);
+    else if (name === 'parking-occupancy')
+      rows = await ParkingSlot.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
+    else if (name === 'profitability')
+      rows = await Sale.aggregate([
+        { $match: { ...dateFilter, status: 'Closed' } },
+        { $project: { vehicle: 1, agreedPrice: 1, actualProfit: 1, closedAt: 1 } },
+      ]);
+    else if (name === 'employee-workload')
+      rows = await WorkOrder.aggregate([
+        { $match: { ...dateFilter, status: { $nin: ['Completed', 'Cancelled'] } } },
+        { $group: { _id: '$assignedTo', openWorkOrders: { $sum: 1 } } },
+      ]);
+    else throw httpError(404, 'Unknown report');
+    if (req.query.format === 'csv') {
+      const headers = rows.length ? Object.keys(rows[0]) : ['result'];
+      res.set({
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="revelo-${name}.csv"`,
+      });
+      return res.send(
+        [
+          headers.map(csvValue).join(','),
+          ...rows.map((row) =>
+            headers
+              .map((h) => csvValue(typeof row[h] === 'object' ? JSON.stringify(row[h]) : row[h]))
+              .join(',')
+          ),
+        ].join('\n')
+      );
+    }
+    res.json({ name, rows });
+  } catch (error) {
+    next(error);
+  }
+});
 export default router;

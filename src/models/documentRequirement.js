@@ -1,2 +1,18 @@
-import mongoose from 'mongoose';import { stamped } from './activity.js';
-export const DocumentRequirement=mongoose.model('DocumentRequirement',new mongoose.Schema({name:{type:String,required:true},category:{type:String,required:true,unique:true},description:String,requiredForAcquisition:{type:Boolean,default:true},requiresExpiry:{type:Boolean,default:false},enabled:{type:Boolean,default:true},applicableFuelTypes:[String],applicableTransactionTypes:[String]},stamped));
+import mongoose from 'mongoose';
+import { stamped } from './activity.js';
+export const DocumentRequirement = mongoose.model(
+  'DocumentRequirement',
+  new mongoose.Schema(
+    {
+      name: { type: String, required: true },
+      category: { type: String, required: true, unique: true },
+      description: String,
+      requiredForAcquisition: { type: Boolean, default: true },
+      requiresExpiry: { type: Boolean, default: false },
+      enabled: { type: Boolean, default: true },
+      applicableFuelTypes: [String],
+      applicableTransactionTypes: [String],
+    },
+    stamped
+  )
+);
