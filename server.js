@@ -1,3 +1,7 @@
+import dns from 'node:dns';
+
+dns.setServers(['8.8.8.8', '1.1.1.1']);
+
 import dotenv from 'dotenv';
 const primaryEnv = dotenv.config({ path: new URL('./.env', import.meta.url) });
 if (primaryEnv.error) dotenv.config({ path: new URL('./src/.env', import.meta.url) });

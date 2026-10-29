@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+!.env.example
+coverage/
+storage/private/
+*.log
+npm-debug.log*
+test-results/
