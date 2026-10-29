@@ -21,6 +21,7 @@ export const Acquisition = mongoose.model(
   'Acquisition',
   new mongoose.Schema(
     {
+      dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true, unique: true },
       enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry' },
       proposedPrice: Number,

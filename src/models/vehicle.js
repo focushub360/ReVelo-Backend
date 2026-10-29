@@ -4,6 +4,7 @@ export const Vehicle = mongoose.model(
   'Vehicle',
   new mongoose.Schema(
     {
+      dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       vehicleCode: { type: String, unique: true },
       registration: { type: String, index: true },
       vin: { type: String, index: true },

@@ -4,6 +4,7 @@ export const Notification = mongoose.model(
   'Notification',
   new mongoose.Schema(
     {
+      dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       recipient: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
       event: { type: String, required: true, index: true },
       title: String,

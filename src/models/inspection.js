@@ -24,6 +24,7 @@ export const Inspection = mongoose.model(
   'Inspection',
   new Schema(
     {
+      dealership: { type: Schema.Types.ObjectId, ref: 'Dealership', index: true },
       vehicle: { type: Schema.Types.ObjectId, ref: 'Vehicle', required: true, index: true },
       kind: { type: String, enum: ['mechanical', 'structural', 'quality'], required: true },
       template: { type: Schema.Types.ObjectId, ref: 'InspectionTemplate' },

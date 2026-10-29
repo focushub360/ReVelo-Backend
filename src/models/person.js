@@ -4,6 +4,7 @@ export const Person = mongoose.model(
   'Person',
   new mongoose.Schema(
     {
+      dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       name: { type: String, required: true },
       phone: String,
       email: String,

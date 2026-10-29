@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { stamped } from './activity.js';
 const schema = new mongoose.Schema(
   {
+    dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
     code: { type: String, unique: true, required: true },
     zone: { type: String, required: true, index: true },
     section: String,
@@ -28,5 +29,5 @@ const schema = new mongoose.Schema(
   },
   stamped
 );
-schema.index({ zone: 1, row: 1, number: 1 }, { unique: true });
+schema.index({ dealership: 1, zone: 1, row: 1, number: 1 }, { unique: true });
 export const ParkingSlot = mongoose.model('ParkingSlot', schema);

@@ -8,9 +8,15 @@ import { Vehicle } from '../models/vehicle.js';
 import { permit } from '../middleware/permit.js';
 import { httpError } from '../utils/core.js';
 import { paginatedQuery } from '../utils/pagination.js';
+import { tenantFilter } from '../middleware/tenant.js';
 
 const router = Router();
 const statuses = ['Available', 'Reserved', 'Occupied', 'Blocked', 'Maintenance'];
+async function findVehicle(vehicleReference, req) {
+  const matches = [{ vehicleCode: vehicleReference }, { registration: vehicleReference }];
+  if (mongoose.isObjectIdOrHexString(vehicleReference)) matches.unshift({ _id: vehicleReference });
+  return Vehicle.findOne(tenantFilter(req, { $or: matches }));
+}
 const slotInput = z.object({
   code: z.string().min(2).max(30),
   zone: z.string().min(1),
@@ -24,7 +30,7 @@ const slotInput = z.object({
 });
 router.get('/parking/zones', permit('parking'), async (req, res, next) => {
   try {
-    res.json(await ParkingZone.find().sort({ name: 1 }));
+    res.json(await ParkingZone.find(tenantFilter(req)).sort({ name: 1 }));
   } catch (error) {
     next(error);
   }
@@ -32,15 +38,13 @@ router.get('/parking/zones', permit('parking'), async (req, res, next) => {
 router.post('/parking/zones', permit('settings'), async (req, res, next) => {
   try {
     res.status(201).json(
-      await ParkingZone.create(
-        z
+      await ParkingZone.create({ dealership: req.tenantId, ...z
           .object({
             name: z.string().min(2),
             code: z.string().min(2).max(12),
             description: z.string().optional(),
           })
-          .parse(req.body)
-      )
+          .parse(req.body) })
     );
   } catch (error) {
     next(error);
@@ -49,7 +53,7 @@ router.post('/parking/zones', permit('settings'), async (req, res, next) => {
 router.patch('/parking/zones/:id', permit('settings'), async (req, res, next) => {
   try {
     const zone = await ParkingZone.findByIdAndUpdate(
-      req.params.id,
+      { _id: req.params.id, ...tenantFilter(req) },
       z
         .object({
           name: z.string().min(2).optional(),
@@ -69,7 +73,7 @@ router.get('/parking/slots', permit('parking'), paginatedQuery(ParkingSlot));
 router.post('/parking/slots', permit('parking'), async (req, res, next) => {
   try {
     const input = slotInput.parse(req.body);
-    const slot = await ParkingSlot.create(input);
+    const slot = await ParkingSlot.create({ ...input, dealership: req.tenantId });
     res.status(201).json(slot);
   } catch (error) {
     next(error);
@@ -77,7 +81,7 @@ router.post('/parking/slots', permit('parking'), async (req, res, next) => {
 });
 router.patch('/parking/slots/:id', permit('parking'), async (req, res, next) => {
   try {
-    const slot = await ParkingSlot.findById(req.params.id);
+    const slot = await ParkingSlot.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!slot) throw httpError(404, 'Parking slot not found');
     if (
       ['Occupied', 'Reserved'].includes(slot.status) &&
@@ -94,7 +98,7 @@ router.patch('/parking/slots/:id', permit('parking'), async (req, res, next) => 
 });
 router.delete('/parking/slots/:id', permit('parking'), async (req, res, next) => {
   try {
-    const slot = await ParkingSlot.findById(req.params.id);
+    const slot = await ParkingSlot.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!slot) throw httpError(404, 'Parking slot not found');
     if (['Occupied', 'Reserved'].includes(slot.status))
       throw httpError(409, 'An occupied or reserved slot cannot be removed');
@@ -107,7 +111,7 @@ router.delete('/parking/slots/:id', permit('parking'), async (req, res, next) =>
 router.get('/parking/vehicles/:vehicleId/history', permit('parking'), async (req, res, next) => {
   try {
     res.json(
-      await Movement.find({ vehicle: req.params.vehicleId }).populate('from to by').sort({ createdAt: -1 })
+      await Movement.find(tenantFilter(req, { vehicle: req.params.vehicleId })).populate('from to by').sort({ createdAt: -1 })
     );
   } catch (error) {
     next(error);
@@ -123,19 +127,27 @@ router.post('/parking/reserve', permit('parking'), async (req, res, next) => {
         reservedUntil: z.coerce.date().optional(),
       })
       .parse(req.body);
+    const vehicleRecord = await findVehicle(vehicle, req);
+    if (!vehicleRecord) throw httpError(404, 'Vehicle not found. Use a valid vehicle ID, registration, or vehicle code.');
     const target = await ParkingSlot.findOneAndUpdate(
-      { _id: slot, status: 'Available', enabled: true },
+      tenantFilter(req, { _id: slot, status: 'Available', enabled: true }),
       {
         $set: {
           status: 'Reserved',
-          reservationVehicle: vehicle,
+          reservationVehicle: vehicleRecord.id,
           reservedUntil: reservedUntil || new Date(Date.now() + 2 * 3600e3),
         },
       },
       { new: true }
     );
     if (!target) throw httpError(409, 'This slot is no longer available');
-    await Movement.create({ vehicle, to: target.id, action: 'Reserve', reason, by: req.user.id });
+    await Movement.create({
+      dealership: req.tenantId, vehicle: vehicleRecord.id,
+      to: target.id,
+      action: 'Reserve',
+      reason,
+      by: req.user.id,
+    });
     res.json(target);
   } catch (error) {
     next(error);
@@ -146,30 +158,30 @@ router.post('/parking/confirm', permit('parking'), async (req, res, next) => {
     const { vehicle, slot, reason } = z
       .object({ vehicle: z.string(), slot: z.string(), reason: z.string().max(1000).optional() })
       .parse(req.body);
-    const vehicleRecord = await Vehicle.findById(vehicle);
-    if (!vehicleRecord) throw httpError(404, 'Vehicle not found');
+    const vehicleRecord = await findVehicle(vehicle, req);
+    if (!vehicleRecord) throw httpError(404, 'Vehicle not found. Use a valid vehicle ID, registration, or vehicle code.');
     if (vehicleRecord.currentLocation && String(vehicleRecord.currentLocation) !== slot)
       throw httpError(409, 'Vehicle already has an active physical location');
     const target = await ParkingSlot.findOneAndUpdate(
       {
-        _id: slot,
+        ...tenantFilter(req), _id: slot,
         status: { $in: ['Available', 'Reserved'] },
         $or: [
           { reservationVehicle: { $exists: false } },
           { reservationVehicle: null },
-          { reservationVehicle: vehicle },
+          { reservationVehicle: vehicleRecord.id },
         ],
       },
       {
-        $set: { status: 'Occupied', activeVehicle: vehicle, occupiedAt: new Date() },
+        $set: { status: 'Occupied', activeVehicle: vehicleRecord.id, occupiedAt: new Date() },
         $unset: { reservationVehicle: 1, reservedUntil: 1 },
       },
       { new: true }
     );
     if (!target) throw httpError(409, 'This slot cannot be occupied');
-    await Vehicle.findByIdAndUpdate(vehicle, { $set: { currentLocation: target.id } });
+    await Vehicle.findOneAndUpdate(tenantFilter(req, { _id: vehicleRecord.id }), { $set: { currentLocation: target.id } });
     await Movement.create({
-      vehicle,
+      dealership: req.tenantId, vehicle: vehicleRecord.id,
       to: target.id,
       action: 'Occupy',
       reason,
@@ -186,17 +198,17 @@ router.post('/parking/release', permit('parking'), async (req, res, next) => {
     const { vehicle, reason } = z
       .object({ vehicle: z.string(), reason: z.string().min(1).max(1000) })
       .parse(req.body);
-    const vehicleRecord = await Vehicle.findById(vehicle);
+    const vehicleRecord = await Vehicle.findOne(tenantFilter(req, { _id: vehicle }));
     if (!vehicleRecord?.currentLocation) throw httpError(404, 'Vehicle has no active location');
     const slot = await ParkingSlot.findOneAndUpdate(
-      { _id: vehicleRecord.currentLocation, activeVehicle: vehicle, status: 'Occupied' },
+      tenantFilter(req, { _id: vehicleRecord.currentLocation, activeVehicle: vehicle, status: 'Occupied' }),
       { $set: { status: 'Available' }, $unset: { activeVehicle: 1, occupiedAt: 1 } },
       { new: true }
     );
     if (!slot) throw httpError(409, 'Persisted vehicle location is inconsistent');
-    await Vehicle.findByIdAndUpdate(vehicle, { $unset: { currentLocation: 1 } });
+    await Vehicle.findOneAndUpdate(tenantFilter(req, { _id: vehicle }), { $unset: { currentLocation: 1 } });
     await Movement.create({
-      vehicle,
+      dealership: req.tenantId, vehicle,
       from: slot.id,
       action: 'Release',
       reason,
@@ -213,21 +225,21 @@ router.post('/parking/relocate', permit('parking'), async (req, res, next) => {
     const { vehicle, to, reason } = z
       .object({ vehicle: z.string(), to: z.string(), reason: z.string().min(1).max(1000) })
       .parse(req.body);
-    const record = await Vehicle.findById(vehicle);
+    const record = await Vehicle.findOne(tenantFilter(req, { _id: vehicle }));
     if (!record?.currentLocation) throw httpError(404, 'Vehicle has no active location');
     const target = await ParkingSlot.findOneAndUpdate(
-      { _id: to, status: 'Available', enabled: true },
+      tenantFilter(req, { _id: to, status: 'Available', enabled: true }),
       { $set: { status: 'Occupied', activeVehicle: vehicle, occupiedAt: new Date() } },
       { new: true }
     );
     if (!target) throw httpError(409, 'Destination is no longer available');
     const source = await ParkingSlot.findOneAndUpdate(
-      { _id: record.currentLocation, activeVehicle: vehicle, status: 'Occupied' },
+      tenantFilter(req, { _id: record.currentLocation, activeVehicle: vehicle, status: 'Occupied' }),
       { $set: { status: 'Available' }, $unset: { activeVehicle: 1, occupiedAt: 1 } },
       { new: true }
     );
     if (!source) {
-      await ParkingSlot.findByIdAndUpdate(target.id, {
+      await ParkingSlot.findOneAndUpdate(tenantFilter(req, { _id: target.id }), {
         $set: { status: 'Available' },
         $unset: { activeVehicle: 1, occupiedAt: 1 },
       });
@@ -235,7 +247,7 @@ router.post('/parking/relocate', permit('parking'), async (req, res, next) => {
     }
     await Vehicle.findByIdAndUpdate(vehicle, { $set: { currentLocation: target.id } });
     await Movement.create({
-      vehicle,
+      dealership: req.tenantId, vehicle,
       from: source.id,
       to: target.id,
       action: 'Relocate',

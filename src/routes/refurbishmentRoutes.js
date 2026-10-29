@@ -8,6 +8,7 @@ import { Vehicle } from '../models/vehicle.js';
 import { permit } from '../middleware/permit.js';
 import { id, httpError } from '../utils/core.js';
 import { paginatedQuery } from '../utils/pagination.js';
+import { tenantFilter, ownOrDealer } from '../middleware/tenant.js';
 const router = Router();
 const statuses = [
   'Open',
@@ -36,16 +37,16 @@ router.get('/work-orders', permit('workorders'), paginatedQuery(WorkOrder));
 router.post('/work-orders', permit('workorders'), async (req, res, next) => {
   try {
     const input = workOrderInput.parse(req.body);
-    const acquisition = await Acquisition.findOne({ vehicle: input.vehicle, status: 'Purchased' });
+    const acquisition = await Acquisition.findOne(tenantFilter(req, { vehicle: input.vehicle, status: 'Purchased' }));
     if (!acquisition) throw httpError(400, 'Work orders require purchased inventory');
     const workOrder = await WorkOrder.create({
-      ...input,
+      ...input, dealership: req.tenantId,
       acquisition: input.acquisition || acquisition.id,
       workOrderCode: id('WO'),
       status: input.assignedTo ? 'Assigned' : 'Open',
       history: [{ type: 'created', message: 'Work order created', actor: req.user.id }],
     });
-    await Vehicle.findByIdAndUpdate(input.vehicle, { lifecycle: 'Under Refurbishment' });
+    await Vehicle.findOneAndUpdate(tenantFilter(req, { _id: input.vehicle }), { lifecycle: 'Under Refurbishment' });
     res.status(201).json(workOrder);
   } catch (error) {
     next(error);
@@ -53,15 +54,15 @@ router.post('/work-orders', permit('workorders'), async (req, res, next) => {
 });
 router.post('/work-orders/from-inspection/:inspectionId', permit('workorders'), async (req, res, next) => {
   try {
-    const inspection = await Inspection.findById(req.params.inspectionId);
+    const inspection = await Inspection.findOne(tenantFilter(req, { _id: req.params.inspectionId }));
     if (!inspection) throw httpError(404, 'Inspection not found');
-    const acquisition = await Acquisition.findOne({ vehicle: inspection.vehicle, status: 'Purchased' });
+    const acquisition = await Acquisition.findOne(tenantFilter(req, { vehicle: inspection.vehicle, status: 'Purchased' }));
     if (!acquisition) throw httpError(400, 'Vehicle has not been purchased');
     const created = [];
     for (const finding of inspection.findings.filter((f) => ['Fail', 'Critical'].includes(f.result))) {
       created.push(
         await WorkOrder.create({
-          workOrderCode: id('WO'),
+          dealership: req.tenantId, workOrderCode: id('WO'),
           vehicle: inspection.vehicle,
           acquisition: acquisition.id,
           inspection: inspection.id,
@@ -75,7 +76,7 @@ router.post('/work-orders/from-inspection/:inspectionId', permit('workorders'), 
         })
       );
     }
-    await Vehicle.findByIdAndUpdate(inspection.vehicle, { lifecycle: 'Under Refurbishment' });
+    await Vehicle.findOneAndUpdate(tenantFilter(req, { _id: inspection.vehicle }), { lifecycle: 'Under Refurbishment' });
     res.status(201).json(created);
   } catch (error) {
     next(error);
@@ -83,7 +84,7 @@ router.post('/work-orders/from-inspection/:inspectionId', permit('workorders'), 
 });
 router.get('/work-orders/:id', permit('workorders'), async (req, res, next) => {
   try {
-    const workOrder = await WorkOrder.findById(req.params.id).populate(
+    const workOrder = await WorkOrder.findOne(tenantFilter(req, { _id: req.params.id })).populate(
       'vehicle acquisition inspection assignedTo'
     );
     if (!workOrder) throw httpError(404, 'Work order not found');
@@ -103,8 +104,9 @@ router.patch('/work-orders/:id', permit('workorders'), async (req, res, next) =>
         reinspectionRequired: z.boolean().optional(),
       })
       .parse(req.body);
-    const workOrder = await WorkOrder.findById(req.params.id);
+    const workOrder = await WorkOrder.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!workOrder) throw httpError(404, 'Work order not found');
+    if (!ownOrDealer(req, workOrder.assignedTo)) throw httpError(403, 'Only the assigned technician may update this work order');
     Object.assign(workOrder, body);
     if (body.status === 'In Progress' && !workOrder.startedAt) workOrder.startedAt = new Date();
     if (body.status === 'Completed') workOrder.completedAt = new Date();
@@ -129,8 +131,9 @@ router.post('/work-orders/:id/expenses', permit('workorders'), async (req, res, 
         reference: z.string().optional(),
       })
       .parse(req.body);
-    const workOrder = await WorkOrder.findById(req.params.id);
+    const workOrder = await WorkOrder.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!workOrder) throw httpError(404, 'Work order not found');
+    if (!ownOrDealer(req, workOrder.assignedTo)) throw httpError(403, 'Only the assigned technician may record expenses');
     workOrder.expenses.push({ ...expense, recordedBy: req.user.id });
     if (expense.type === 'Labour') workOrder.actualLabour += expense.amount;
     if (expense.type === 'Parts') workOrder.actualParts += expense.amount;
@@ -155,7 +158,7 @@ router.post('/work-orders/:id/scope', permit('workorders'), async (req, res, nex
         estimatedParts: z.coerce.number().min(0).optional(),
       })
       .parse(req.body);
-    const workOrder = await WorkOrder.findById(req.params.id);
+    const workOrder = await WorkOrder.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!workOrder) throw httpError(404, 'Work order not found');
     if (change.estimatedLabour !== undefined) workOrder.estimatedLabour = change.estimatedLabour;
     if (change.estimatedParts !== undefined) workOrder.estimatedParts = change.estimatedParts;
@@ -182,14 +185,14 @@ router.post('/quality-checks', permit('quality'), async (req, res, next) => {
       })
       .parse(req.body);
     const incomplete = await WorkOrder.exists({
-      vehicle: body.vehicle,
+      ...tenantFilter(req), vehicle: body.vehicle,
       status: { $nin: ['Completed', 'Cancelled'] },
     });
     if (incomplete)
       throw httpError(400, 'Complete or cancel all applicable work orders before final quality control');
     res.status(201).json(
       await QualityCheck.create({
-        ...body,
+        ...body, dealership: req.tenantId,
         history: [{ type: 'assigned', message: 'Final quality control assigned', actor: req.user.id }],
       })
     );
@@ -215,7 +218,7 @@ router.patch('/quality-checks/:id', permit('quality'), async (req, res, next) =>
         status: z.enum(['In Progress']).optional(),
       })
       .parse(req.body);
-    const qa = await QualityCheck.findById(req.params.id);
+    const qa = await QualityCheck.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!qa) throw httpError(404, 'Quality check not found');
     Object.assign(qa, body);
     await qa.save();
@@ -229,7 +232,7 @@ router.post('/quality-checks/:id/decision', permit('quality'), async (req, res, 
     const { passed, note } = z
       .object({ passed: z.boolean(), note: z.string().max(2000).optional() })
       .parse(req.body);
-    const qa = await QualityCheck.findById(req.params.id);
+    const qa = await QualityCheck.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!qa) throw httpError(404, 'Quality check not found');
     const open = await WorkOrder.exists({
       vehicle: qa.vehicle,

@@ -4,6 +4,7 @@ export const Document = mongoose.model(
   'Document',
   new mongoose.Schema(
     {
+      dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true, index: true },
       enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry' },
       person: { type: mongoose.Schema.Types.ObjectId, ref: 'Person' },

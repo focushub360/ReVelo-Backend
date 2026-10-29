@@ -4,6 +4,7 @@ export const QualityCheck = mongoose.model(
   'QualityCheck',
   new mongoose.Schema(
     {
+      dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true, index: true },
       assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
       status: {

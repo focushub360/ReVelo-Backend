@@ -14,6 +14,7 @@ export const Sale = mongoose.model(
   'Sale',
   new mongoose.Schema(
     {
+      dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true, index: true },
       buyerEnquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry' },
       status: {

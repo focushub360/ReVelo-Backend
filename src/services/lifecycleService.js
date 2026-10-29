@@ -3,10 +3,11 @@ import { DocumentRequirement } from '../models/documentRequirement.js';
 import { Inspection } from '../models/inspection.js';
 import { WorkOrder } from '../models/workOrder.js';
 import { QualityCheck } from '../models/qualityCheck.js';
-export async function documentEligibility(vehicle) {
+export async function documentEligibility(vehicle, dealership) {
+  const scope = dealership ? { dealership } : {};
   const [requirements, documents] = await Promise.all([
     DocumentRequirement.find({ enabled: true, requiredForAcquisition: true }),
-    Document.find({ vehicle }),
+    Document.find({ ...scope, vehicle }),
   ]);
   const missing = requirements
     .filter(

@@ -4,6 +4,7 @@ export const Enquiry = mongoose.model(
   'Enquiry',
   new mongoose.Schema(
     {
+      dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       enquiryCode: { type: String, unique: true },
       type: { type: String, enum: ['seller', 'buyer'], default: 'seller' },
       vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true },

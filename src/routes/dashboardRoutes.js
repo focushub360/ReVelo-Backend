@@ -9,11 +9,13 @@ import { Acquisition } from '../models/acquisition.js';
 import { Sale } from '../models/sale.js';
 import { QualityCheck } from '../models/qualityCheck.js';
 import { Inspection } from '../models/inspection.js';
+import { tenantFilter } from '../middleware/tenant.js';
 
 const router = Router();
 
 router.get('/dashboard', async (req, res, next) => {
   try {
+    const scope = tenantFilter(req);
     const [
       vehicles,
       newSellerEnquiries,
@@ -31,26 +33,20 @@ router.get('/dashboard', async (req, res, next) => {
       sales,
       profit,
     ] = await Promise.all([
-      Vehicle.countDocuments(),
-      Enquiry.countDocuments({ type: 'seller', status: 'Open' }),
-      Document.countDocuments({ status: { $in: ['Submitted', 'Under Review', 'On Hold', 'Mismatch'] } }),
-      Vehicle.countDocuments({ lifecycle: { $in: ['Enquiry Created', 'Verification Pending'] } }),
-      Vehicle.countDocuments({ lifecycle: 'On Hold' }),
-      Acquisition.countDocuments({ status: { $in: ['Valuation Requested', 'Revised Valuation Requested'] } }),
-      Vehicle.countDocuments({ lifecycle: 'Purchased Inventory' }),
+      Vehicle.countDocuments(scope), Enquiry.countDocuments({ ...scope, type: 'seller', status: 'Open' }),
+      Document.countDocuments({ ...scope, status: { $in: ['Submitted', 'Under Review', 'On Hold', 'Mismatch'] } }),
+      Vehicle.countDocuments({ ...scope, lifecycle: { $in: ['Enquiry Created', 'Verification Pending'] } }), Vehicle.countDocuments({ ...scope, lifecycle: 'On Hold' }),
+      Acquisition.countDocuments({ ...scope, status: { $in: ['Valuation Requested', 'Revised Valuation Requested'] } }), Vehicle.countDocuments({ ...scope, lifecycle: 'Purchased Inventory' }),
       WorkOrder.countDocuments({
-        status: { $in: ['Assigned', 'In Progress', 'Waiting for Parts', 'Rework Required'] },
+        ...scope, status: { $in: ['Assigned', 'In Progress', 'Waiting for Parts', 'Rework Required'] },
       }),
       QualityCheck.countDocuments({
-        status: { $in: ['Assigned', 'In Progress', 'Reinspection', 'Rework Required'] },
+        ...scope, status: { $in: ['Assigned', 'In Progress', 'Reinspection', 'Rework Required'] },
       }),
-      Vehicle.countDocuments({ lifecycle: 'Ready for Sale' }),
-      ParkingSlot.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
-      Enquiry.countDocuments({ type: 'buyer', status: { $in: ['Open', 'Contacted', 'On Hold'] } }),
-      Acquisition.countDocuments({ status: 'Purchased' }),
-      Sale.countDocuments({ status: 'Closed' }),
+      Vehicle.countDocuments({ ...scope, lifecycle: 'Ready for Sale' }), ParkingSlot.aggregate([{ $match: scope }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
+      Enquiry.countDocuments({ ...scope, type: 'buyer', status: { $in: ['Open', 'Contacted', 'On Hold'] } }), Acquisition.countDocuments({ ...scope, status: 'Purchased' }), Sale.countDocuments({ ...scope, status: 'Closed' }),
       Sale.aggregate([
-        { $match: { status: 'Closed' } },
+        { $match: { ...scope, status: 'Closed' } },
         { $group: { _id: null, realised: { $sum: '$actualProfit' } } },
       ]),
     ]);
@@ -77,7 +73,7 @@ router.get('/dashboard', async (req, res, next) => {
 });
 router.get('/notifications', async (req, res, next) => {
   try {
-    res.json(await Notification.find({ recipient: req.user.id }).sort({ createdAt: -1 }).limit(50));
+    res.json(await Notification.find(tenantFilter(req, { recipient: req.user.id })).sort({ createdAt: -1 }).limit(50));
   } catch (error) {
     next(error);
   }

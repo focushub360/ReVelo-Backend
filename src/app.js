@@ -26,9 +26,10 @@ import {
   Sale,
   Notification,
   Audit,
+  Dealership,
 } from './models/index.js';
-import { ROLES } from './config/permissions.js';
-import { authenticate, csrf, permit } from './middleware/index.js';
+import { ROLES, OPERATIONAL_PROFILES, PARTY_TYPES } from './config/permissions.js';
+import { authenticate, csrf, permit, tenantContext, tenantFilter } from './middleware/index.js';
 import { id, token, audit, httpError } from './utils/core.js';
 import { paginatedQuery } from './utils/pagination.js';
 import { storageProvider } from './storage/privateStorage.js';
@@ -41,6 +42,8 @@ import refurbishmentRoutes from './routes/refurbishmentRoutes.js';
 import resaleRoutes from './routes/resaleRoutes.js';
 import reportingRoutes from './routes/reportingRoutes.js';
 import lifecycleRoutes from './routes/lifecycleRoutes.js';
+import portalRoutes from './routes/portalRoutes.js';
+import profileRoutes from './routes/profileRoutes.js';
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 5 } });
 app.use((req, res, next) => {
@@ -90,7 +93,9 @@ app.post(
         path: '/api',
         maxAge: 8 * 3600e3,
       });
-      res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role }, csrfToken });
+      user.lastLoginAt = new Date(); user.lastActiveAt = new Date(); await user.save();
+      await audit(Audit, user.id, 'LOGIN', 'User', user.id, {}, { actorName: user.name, role: user.role, operationalProfile: user.operationalProfile, dealership: user.dealership, requestId: req.requestId });
+      res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, operationalProfile: user.operationalProfile, partyType: user.partyType, dealership: user.dealership }, csrfToken });
     } catch (e) {
       next(e);
     }
@@ -105,12 +110,30 @@ app.post('/api/auth/logout', authenticate, csrf, async (req, res, next) => {
     next(e);
   }
 });
-app.get('/api/auth/me', authenticate, (q, s) => s.json({ user: q.user, csrfToken: q.session.csrfToken }));
+app.get('/api/auth/me', authenticate, (q, s) => s.json({ user: { id: q.user.id, name: q.user.name, email: q.user.email, phone: q.user.phone, photoUrl: q.user.photoUrl, role: q.user.role, operationalProfile: q.user.operationalProfile, partyType: q.user.partyType, dealership: q.user.dealership, active: q.user.active }, csrfToken: q.session.csrfToken }));
 app.use('/api', (req, res, next) =>
   ['/auth/password-reset/request', '/auth/password-reset/confirm'].includes(req.path)
     ? next()
     : authenticate(req, res, (error) => (error ? next(error) : csrf(req, res, next)))
 );
+app.use('/api', tenantContext);
+app.get('/api/dealers', permit('dealers:view'), async (q, s, n) => {
+  try { s.json(await Dealership.find().sort({ createdAt: -1 }).lean()); } catch (e) { n(e); }
+});
+app.post('/api/dealers', permit('dealers:create'), async (q, s, n) => {
+  try {
+    const body = z.object({ name: z.string().min(2), code: z.string().min(2).max(20), contact: z.object({ name: z.string().min(2), email: z.string().email(), phone: z.string().min(5) }), address: z.object({ line1: z.string().min(2), city: z.string().min(2), state: z.string().optional(), postalCode: z.string().optional(), country: z.string().optional() }), subscription: z.object({ plan: z.string().min(2), maxUsers: z.coerce.number().int().min(1), maxVehicles: z.coerce.number().int().min(1) }), admin: z.object({ name: z.string().min(2), email: z.string().email(), phone: z.string().optional() }).optional() }).parse(q.body);
+    const dealer = await Dealership.create({ ...body, code: body.code.toUpperCase(), onboardingStatus: 'Invited', subscription: { ...body.subscription, status: 'Active' } });
+    let admin; let raw;
+    if (body.admin) { raw = token(); admin = await User.create({ name: body.admin.name, email: body.admin.email.toLowerCase(), phone: body.admin.phone, role: 'Dealer Admin', dealership: dealer.id, passwordHash: await bcrypt.hash(token(), 12), inviteTokenHash: crypto.createHash('sha256').update(raw).digest('hex'), inviteExpiresAt: new Date(Date.now() + 72 * 3600e3), passwordChangeRequired: true }); }
+    await audit(Audit, q.user.id, 'CREATE_DEALER', 'Dealership', dealer.id, { dealerAdmin: admin?.id }, { actorName: q.user.name, role: q.user.role, requestId: q.requestId });
+    s.status(201).json({ dealer, dealerAdmin: admin ? { id: admin.id, email: admin.email } : undefined, invitationToken: process.env.NODE_ENV === 'development' ? raw : undefined });
+  } catch (e) { n(e); }
+});
+app.patch('/api/dealers/:id/status', permit('dealers:update'), async (q, s, n) => {
+  try { const { active, status } = z.object({ active: z.boolean(), status: z.enum(['Trial', 'Active', 'Suspended', 'Deactivated']) }).parse(q.body); const d = await Dealership.findByIdAndUpdate(q.params.id, { active, 'subscription.status': status, onboardingStatus: active ? 'Active' : 'Suspended' }, { new: true }); if (!d) throw httpError(404, 'Dealership not found'); if (!active) { await User.updateMany({ dealership: d.id }, { active: false, $inc: { sessionVersion: 1 } }); await Session.deleteMany({ user: { $in: (await User.find({ dealership: d.id }).select('_id')).map(x => x.id) } }); } s.json(d); } catch (e) { n(e); }
+});
+app.get('/api/activity', permit('audit:view'), async (q, s, n) => { try { s.json(await Audit.find(tenantFilter(q)).sort({ createdAt: -1 }).limit(100).lean()); } catch (e) { n(e); } });
 app.use('/api', inspectionRoutes);
 app.use('/api', parkingRoutes);
 app.use('/api', acquisitionRoutes);
@@ -118,9 +141,11 @@ app.use('/api', refurbishmentRoutes);
 app.use('/api', resaleRoutes);
 app.use('/api', reportingRoutes);
 app.use('/api', lifecycleRoutes);
+app.use('/api', portalRoutes);
+app.use('/api', profileRoutes);
 app.get('/api/users', permit('users'), async (q, s, n) => {
   try {
-    s.json(await User.find().select('-passwordHash -sessionVersion').sort({ name: 1 }).lean());
+    s.json(await User.find(q.user.role === 'Super Admin' ? {} : { dealership: q.tenantId }).select('-passwordHash -sessionVersion -inviteTokenHash').sort({ name: 1 }).lean());
   } catch (e) {
     n(e);
   }
@@ -131,15 +156,22 @@ app.post('/api/users', permit('users'), async (q, s, n) => {
       .object({
         name: z.string().min(2).max(100),
         email: z.string().email(),
-        password: z.string().min(12).max(128),
-        role: z.enum(ROLES),
+        password: z.string().min(12).max(128).optional(),
+        role: z.enum(ROLES).optional(), operationalProfile: z.enum(OPERATIONAL_PROFILES).optional(), partyType: z.enum(PARTY_TYPES).optional(), phone: z.string().max(30).optional(),
+        dealership: z.string().optional(),
         active: z.boolean().optional(),
       })
       .parse(q.body);
+    const targetRole = q.user.role === 'Super Admin' ? b.role : 'Technician & Service Advisor';
+    if (!targetRole || (targetRole === 'Technician & Service Advisor' && !b.operationalProfile)) throw httpError(400, 'An operational profile is required for employee accounts');
+    if (q.user.role !== 'Super Admin' && (b.role || b.partyType || b.dealership)) throw httpError(403, 'Dealer Admins can only provision operational employees');
+    if (q.user.role === 'Super Admin' && targetRole !== 'Dealer Admin') throw httpError(403, 'Platform administrators can provision Dealer Admin accounts only through this endpoint');
+    if (q.user.role === 'Super Admin' && (!b.dealership || !(await Dealership.exists({ _id: b.dealership, active: true })))) throw httpError(400, 'Select an active dealership for the Dealer Admin');
     const u = await User.create({
       ...b,
+      role: targetRole, dealership: q.user.role === 'Super Admin' ? b.dealership : q.tenantId,
       email: b.email.toLowerCase(),
-      passwordHash: await bcrypt.hash(b.password, 12),
+      passwordHash: await bcrypt.hash(b.password || token(), 12), passwordChangeRequired: !b.password,
     });
     await audit(Audit, q.user.id, 'CREATE', 'User', u.id, { role: u.role, active: u.active });
     s.status(201).json({ id: u.id });
@@ -153,16 +185,17 @@ app.patch('/api/users/:id', permit('users'), async (q, s, n) => {
       .object({
         name: z.string().min(2).max(100).optional(),
         email: z.string().email().optional(),
-        role: z.enum(ROLES).optional(),
+        operationalProfile: z.enum(OPERATIONAL_PROFILES).optional(),
         active: z.boolean().optional(),
       })
       .refine((x) => Object.keys(x).length > 0)
       .parse(q.body);
     const u = await User.findById(q.params.id);
     if (!u) throw httpError(404, 'User not found');
+    if (q.user.role !== 'Super Admin' && String(u.dealership) !== String(q.tenantId)) throw httpError(404, 'User not found');
     if (String(u.id) === String(q.user.id) && b.active === false)
       throw httpError(400, 'You cannot deactivate your own account');
-    const changedRole = b.role && b.role !== u.role,
+    const changedRole = false,
       changedAccess = b.active !== undefined && b.active !== u.active;
     Object.assign(u, b, b.email ? { email: b.email.toLowerCase() } : {});
     if (changedRole || changedAccess) u.sessionVersion += 1;
@@ -433,6 +466,12 @@ const documentStatuses = [
   'Rejected',
   'On Hold',
 ];
+async function findVehicleByReference(reference) {
+  const value = reference.trim();
+  const matches = [{ vehicleCode: value }, { registration: value }];
+  if (/^[a-f\d]{24}$/i.test(value)) matches.unshift({ _id: value });
+  return Vehicle.findOne({ $or: matches });
+}
 app.get('/api/documents', permit('documents'), page(Document));
 app.get('/api/documents/requirements', permit('documents'), async (q, s, n) => {
   try {
@@ -461,8 +500,10 @@ app.post('/api/documents/requirements', permit('settings'), async (q, s, n) => {
 });
 app.get('/api/vehicles/:vehicleId/documents', permit('documents'), async (q, s, n) => {
   try {
+    const vehicle = await findVehicleByReference(q.params.vehicleId);
+    if (!vehicle) throw httpError(404, 'Vehicle not found. Use a valid vehicle ID, registration, or vehicle code.');
     const [docs, requirements] = await Promise.all([
-      Document.find({ vehicle: q.params.vehicleId })
+      Document.find({ vehicle: vehicle.id })
         .populate('person submittedBy reviewer')
         .sort({ createdAt: -1 }),
       DocumentRequirement.find({ enabled: true }),
@@ -504,9 +545,12 @@ app.post('/api/documents', permit('documents'), upload.single('file'), async (q,
         consentRecorded: z.enum(['true', 'false']).optional(),
       })
       .parse(q.body);
+    const vehicle = await findVehicleByReference(input.vehicle);
+    if (!vehicle) throw httpError(404, 'Vehicle not found. Use a valid vehicle ID, registration, or vehicle code.');
     const file = await storageProvider.save(q.file.buffer);
     const doc = await Document.create({
       ...input,
+      vehicle: vehicle.id,
       ...file,
       originalName: q.file.originalname.replace(/[\\/]/g, '_').slice(0, 180),
       size: q.file.size,
@@ -597,7 +641,7 @@ const simple = (base, Model, resource) => {
 };
 app.use('/api', dashboardRoutes);
 app.use((e, q, s, n) => {
-  const status = e.status || (e.name === 'ZodError' ? 400 : 500);
+  const status = e.status || (['ZodError', 'CastError', 'ValidationError'].includes(e.name) ? 400 : 500);
   console.error(JSON.stringify({ level: 'error', requestId: q.requestId, status, message: e.message }));
   s.status(status).json({
     error: {

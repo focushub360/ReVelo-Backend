@@ -15,6 +15,7 @@ export const WorkOrder = mongoose.model(
   'WorkOrder',
   new mongoose.Schema(
     {
+      dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       workOrderCode: { type: String, required: true, unique: true },
       vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true, index: true },
       acquisition: { type: mongoose.Schema.Types.ObjectId, ref: 'Acquisition' },

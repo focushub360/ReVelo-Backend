@@ -6,6 +6,7 @@ import { Vehicle } from '../models/vehicle.js';
 import { permit } from '../middleware/permit.js';
 import { httpError } from '../utils/core.js';
 import { paginatedQuery } from '../utils/pagination.js';
+import { tenantFilter, ownOrDealer } from '../middleware/tenant.js';
 
 const router = Router();
 const findings = z.array(
@@ -24,7 +25,7 @@ const findings = z.array(
 );
 router.get('/inspection-templates', permit('inspections'), async (req, res, next) => {
   try {
-    res.json(await InspectionTemplate.find({ enabled: true }).sort({ kind: 1, name: 1 }));
+    res.json(await InspectionTemplate.find(tenantFilter(req, { enabled: true })).sort({ kind: 1, name: 1 }));
   } catch (error) {
     next(error);
   }
@@ -48,7 +49,7 @@ router.post('/inspection-templates', permit('settings'), async (req, res, next) 
           .min(1),
       })
       .parse(req.body);
-    res.status(201).json(await InspectionTemplate.create(input));
+    res.status(201).json(await InspectionTemplate.create({ ...input, dealership: req.tenantId }));
   } catch (error) {
     next(error);
   }
@@ -72,12 +73,12 @@ router.post('/inspections', permit('inspections'), async (req, res, next) => {
           .optional(),
       })
       .parse(req.body);
-    const vehicle = await Vehicle.findById(input.vehicle);
+    const vehicle = await Vehicle.findOne(tenantFilter(req, { _id: input.vehicle }));
     if (!vehicle) throw httpError(404, 'Vehicle not found');
     let template;
     let reportFindings = [];
     if (input.template) {
-      template = await InspectionTemplate.findOne({ _id: input.template, kind: input.kind, enabled: true });
+      template = await InspectionTemplate.findOne(tenantFilter(req, { _id: input.template, kind: input.kind, enabled: true }));
       if (!template) throw httpError(400, 'Inspection template is unavailable');
       reportFindings = template.questions.map((question) => ({
         questionId: question.questionId,
@@ -87,7 +88,7 @@ router.post('/inspections', permit('inspections'), async (req, res, next) => {
       }));
     }
     const inspection = await Inspection.create({
-      ...input,
+      ...input, dealership: req.tenantId,
       assignedBy: req.user.id,
       roadTest: { ...input.roadTest, authorisedBy: input.roadTest?.authorised ? req.user.id : undefined },
       findings: reportFindings,
@@ -100,13 +101,13 @@ router.post('/inspections', permit('inspections'), async (req, res, next) => {
 });
 router.get('/inspections/:id', permit('inspections'), async (req, res, next) => {
   try {
-    const report = await Inspection.findById(req.params.id).populate(
+    const report = await Inspection.findOne(tenantFilter(req, { _id: req.params.id })).populate(
       'vehicle assignedTo assignedBy reviewer template parentReport'
     );
     if (!report) throw httpError(404, 'Inspection not found');
-    const revisions = await Inspection.find({
+    const revisions = await Inspection.find(tenantFilter(req, {
       $or: [{ _id: report.id }, { parentReport: report.parentReport || report.id }],
-    })
+    }))
       .select('revision status revisionReason createdAt submittedAt reviewer')
       .sort({ revision: 1 });
     res.json({ report, revisions });
@@ -138,8 +139,9 @@ router.patch('/inspections/:id', permit('inspections'), async (req, res, next) =
         status: z.enum(['In Progress']).optional(),
       })
       .parse(req.body);
-    const report = await Inspection.findById(req.params.id);
+    const report = await Inspection.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!report) throw httpError(404, 'Inspection not found');
+    if (!ownOrDealer(req, report.assignedTo)) throw httpError(403, 'Only the assigned employee may update this report');
     if (['Submitted', 'Reviewed'].includes(report.status))
       throw httpError(409, 'Create a revision to alter a submitted report');
     Object.assign(report, input);
@@ -153,8 +155,9 @@ router.patch('/inspections/:id', permit('inspections'), async (req, res, next) =
 });
 router.post('/inspections/:id/submit', permit('inspections'), async (req, res, next) => {
   try {
-    const report = await Inspection.findById(req.params.id);
+    const report = await Inspection.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!report) throw httpError(404, 'Inspection not found');
+    if (!ownOrDealer(req, report.assignedTo)) throw httpError(403, 'Only the assigned employee may submit this report');
     if (report.status === 'Submitted') return res.json(report);
     const unanswered = report.findings.filter((f) => f.required && f.result === 'Not Inspected');
     if (unanswered.length)
@@ -177,7 +180,7 @@ router.post('/inspections/:id/review', permit('inspections'), async (req, res, n
     const { approved, note } = z
       .object({ approved: z.boolean(), note: z.string().max(2000).optional() })
       .parse(req.body);
-    const report = await Inspection.findById(req.params.id);
+    const report = await Inspection.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!report) throw httpError(404, 'Inspection not found');
     if (report.status !== 'Submitted') throw httpError(400, 'Only submitted reports can be reviewed');
     report.status = approved ? 'Reviewed' : 'Reinspection Required';
@@ -198,19 +201,23 @@ router.post('/inspections/:id/review', permit('inspections'), async (req, res, n
 router.post('/inspections/:id/revision', permit('inspections'), async (req, res, next) => {
   try {
     const { reason } = z.object({ reason: z.string().min(3).max(2000) }).parse(req.body);
-    const previous = await Inspection.findById(req.params.id);
+    const previous = await Inspection.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!previous) throw httpError(404, 'Inspection not found');
-    if (!['Submitted', 'Reviewed', 'Reinspection Required'].includes(previous.status))
+    const rootReport = previous.parentReport || previous.id;
+    const latest = await Inspection.findOne(tenantFilter(req, {
+      $or: [{ _id: rootReport }, { parentReport: rootReport }],
+    })).sort({ revision: -1 });
+    if (!latest || !['Submitted', 'Reviewed', 'Reinspection Required'].includes(latest.status))
       throw httpError(400, 'Only reviewed or submitted reports can be revised');
     const revision = await Inspection.create({
-      ...previous.toObject(),
+      ...latest.toObject(),
       _id: undefined,
       id: undefined,
       createdAt: undefined,
       updatedAt: undefined,
       status: 'Assigned',
-      revision: previous.revision + 1,
-      parentReport: previous.parentReport || previous.id,
+      revision: latest.revision + 1,
+      parentReport: rootReport,
       revisionReason: reason,
       assignedBy: req.user.id,
       assignedAt: new Date(),
@@ -222,7 +229,7 @@ router.post('/inspections/:id/revision', permit('inspections'), async (req, res,
       history: [
         {
           type: 'revision',
-          message: `Revision ${previous.revision + 1} created: ${reason}`,
+          message: `Revision ${latest.revision + 1} created: ${reason}`,
           actor: req.user.id,
         },
       ],

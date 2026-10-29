@@ -5,15 +5,16 @@ import { Sale } from '../models/sale.js';
 import { permit } from '../middleware/permit.js';
 import { httpError } from '../utils/core.js';
 import { readiness } from '../services/lifecycleService.js';
+import { tenantFilter } from '../middleware/tenant.js';
 const router = Router();
 router.get('/vehicles/:id/lifecycle-readiness', permit('vehicles'), async (req, res, next) => {
   try {
-    const vehicle = await Vehicle.findById(req.params.id);
+    const vehicle = await Vehicle.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!vehicle) throw httpError(404, 'Vehicle not found');
     const [checks, acquisition, sale] = await Promise.all([
-      readiness(vehicle.id),
-      Acquisition.findOne({ vehicle: vehicle.id }),
-      Sale.findOne({ vehicle: vehicle.id, status: { $nin: ['Cancelled', 'Closed'] } }),
+      readiness(vehicle.id, req.tenantId),
+      Acquisition.findOne(tenantFilter(req, { vehicle: vehicle.id })),
+      Sale.findOne(tenantFilter(req, { vehicle: vehicle.id, status: { $nin: ['Cancelled', 'Closed'] } })),
     ]);
     res.json({
       vehicleId: vehicle.id,

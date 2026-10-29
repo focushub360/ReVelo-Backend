@@ -4,6 +4,7 @@ export const AcquisitionOffer = mongoose.model(
   'AcquisitionOffer',
   new mongoose.Schema(
     {
+      dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       acquisition: { type: mongoose.Schema.Types.ObjectId, ref: 'Acquisition', required: true, index: true },
       amount: { type: Number, required: true, min: 0 },
       status: {

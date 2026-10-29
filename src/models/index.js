@@ -1,5 +1,6 @@
 // Compatibility barrel only. Each Mongoose model lives in its own file.
 export { User } from './user.js';
+export { Dealership } from './dealership.js';
 export { Session } from './session.js';
 export { PasswordReset } from './passwordReset.js';
 export { Person } from './person.js';
@@ -20,3 +21,5 @@ export { QualityCheck } from './qualityCheck.js';
 export { Sale } from './sale.js';
 export { Notification } from './notification.js';
 export { Audit } from './audit.js';
+export { Negotiation } from './negotiation.js';
+export { Appointment } from './appointment.js';
