@@ -27,6 +27,11 @@ import {
   Notification,
   Audit,
   Dealership,
+  ParkingZone,
+  QualityCheck,
+  AcquisitionOffer,
+  Negotiation,
+  Appointment,
 } from './models/index.js';
 import { ROLES, OPERATIONAL_PROFILES, PARTY_TYPES } from './config/permissions.js';
 import { authenticate, csrf, permit, tenantContext, tenantFilter } from './middleware/index.js';
@@ -130,8 +135,85 @@ app.post('/api/dealers', permit('dealers:create'), async (q, s, n) => {
     s.status(201).json({ dealer, dealerAdmin: admin ? { id: admin.id, email: admin.email } : undefined, invitationToken: process.env.NODE_ENV === 'development' ? raw : undefined });
   } catch (e) { n(e); }
 });
+app.patch('/api/dealers/:id', permit('dealers:update'), async (q, s, n) => {
+  try {
+    const body = z.object({
+      name: z.string().min(2).max(100).optional(),
+      code: z.string().min(2).max(20).optional(),
+      contact: z.object({
+        name: z.string().min(2).optional(),
+        email: z.string().email().optional(),
+        phone: z.string().min(5).optional(),
+      }).partial().optional(),
+      address: z.object({
+        line1: z.string().min(2).optional(),
+        city: z.string().min(2).optional(),
+        state: z.string().optional(),
+        postalCode: z.string().optional(),
+        country: z.string().optional(),
+      }).partial().optional(),
+      subscription: z.object({
+        plan: z.string().min(2).optional(),
+        maxUsers: z.coerce.number().int().min(1).optional(),
+        maxVehicles: z.coerce.number().int().min(1).optional(),
+      }).partial().optional(),
+    }).refine((value) => Object.keys(value).length > 0).parse(q.body);
+    if (body.code) body.code = body.code.toUpperCase();
+    const dealer = await Dealership.findByIdAndUpdate(q.params.id, { $set: body }, {
+      new: true,
+      runValidators: true,
+    });
+    if (!dealer) throw httpError(404, 'Dealership not found');
+    await audit(Audit, q.user.id, 'UPDATE', 'Dealership', dealer.id, body, {
+      actorName: q.user.name,
+      role: q.user.role,
+      requestId: q.requestId,
+    });
+    s.json(dealer);
+  } catch (e) { n(e); }
+});
+app.delete('/api/dealers/:id', permit('dealers:update'), async (q, s, n) => {
+  try {
+    const dealer = await Dealership.findById(q.params.id);
+    if (!dealer) throw httpError(404, 'Dealership not found');
+    const linkedRecords = await Promise.all([
+      User, Person, Vehicle, Enquiry, Document, Inspection, ParkingSlot, ParkingZone,
+      Movement, Acquisition, AcquisitionOffer, WorkOrder, QualityCheck, Sale,
+      Notification, Negotiation, Appointment,
+    ].map((Model) => Model.exists({ dealership: dealer.id })));
+    if (linkedRecords.some(Boolean)) {
+      throw httpError(409, 'Cannot delete a dealership that has users or operational records. Deactivate it instead.');
+    }
+    await audit(Audit, q.user.id, 'DELETE', 'Dealership', dealer.id, { name: dealer.name }, {
+      actorName: q.user.name,
+      role: q.user.role,
+      requestId: q.requestId,
+    });
+    await Dealership.deleteOne({ _id: dealer.id });
+    s.status(204).end();
+  } catch (e) { n(e); }
+});
 app.patch('/api/dealers/:id/status', permit('dealers:update'), async (q, s, n) => {
-  try { const { active, status } = z.object({ active: z.boolean(), status: z.enum(['Trial', 'Active', 'Suspended', 'Deactivated']) }).parse(q.body); const d = await Dealership.findByIdAndUpdate(q.params.id, { active, 'subscription.status': status, onboardingStatus: active ? 'Active' : 'Suspended' }, { new: true }); if (!d) throw httpError(404, 'Dealership not found'); if (!active) { await User.updateMany({ dealership: d.id }, { active: false, $inc: { sessionVersion: 1 } }); await Session.deleteMany({ user: { $in: (await User.find({ dealership: d.id }).select('_id')).map(x => x.id) } }); } s.json(d); } catch (e) { n(e); }
+  try {
+    const { active } = z.object({ active: z.boolean() }).parse(q.body);
+    const d = await Dealership.findByIdAndUpdate(q.params.id, {
+      active,
+      'subscription.status': active ? 'Active' : 'Suspended',
+      onboardingStatus: active ? 'Active' : 'Suspended',
+    }, { new: true, runValidators: true });
+    if (!d) throw httpError(404, 'Dealership not found');
+    if (!active) {
+      const users = await User.find({ dealership: d.id }).select('_id');
+      await User.updateMany({ dealership: d.id, active: true }, { active: false, $inc: { sessionVersion: 1 } });
+      await Session.deleteMany({ user: { $in: users.map((user) => user.id) } });
+    }
+    await audit(Audit, q.user.id, active ? 'ACTIVATE' : 'DEACTIVATE', 'Dealership', d.id, { active }, {
+      actorName: q.user.name,
+      role: q.user.role,
+      requestId: q.requestId,
+    });
+    s.json(d);
+  } catch (e) { n(e); }
 });
 app.get('/api/activity', permit('audit:view'), async (q, s, n) => { try { s.json(await Audit.find(tenantFilter(q)).sort({ createdAt: -1 }).limit(100).lean()); } catch (e) { n(e); } });
 app.use('/api', inspectionRoutes);
@@ -167,15 +249,21 @@ app.post('/api/users', permit('users'), async (q, s, n) => {
     if (q.user.role !== 'Super Admin' && (b.role || b.partyType || b.dealership)) throw httpError(403, 'Dealer Admins can only provision operational employees');
     if (q.user.role === 'Super Admin' && targetRole !== 'Dealer Admin') throw httpError(403, 'Platform administrators can provision Dealer Admin accounts only through this endpoint');
     if (q.user.role === 'Super Admin' && (!b.dealership || !(await Dealership.exists({ _id: b.dealership, active: true })))) throw httpError(400, 'Select an active dealership for the Dealer Admin');
+    const email = b.email.toLowerCase();
+    if (await User.exists({ email })) throw httpError(409, 'An account with this email already exists');
     const u = await User.create({
       ...b,
       role: targetRole, dealership: q.user.role === 'Super Admin' ? b.dealership : q.tenantId,
-      email: b.email.toLowerCase(),
+      email,
       passwordHash: await bcrypt.hash(b.password || token(), 12), passwordChangeRequired: !b.password,
     });
     await audit(Audit, q.user.id, 'CREATE', 'User', u.id, { role: u.role, active: u.active });
     s.status(201).json({ id: u.id });
   } catch (e) {
+    if (e?.code === 11000) {
+      next(httpError(409, 'An account with this email already exists'));
+      return;
+    }
     next(e);
   }
 });
@@ -195,6 +283,10 @@ app.patch('/api/users/:id', permit('users'), async (q, s, n) => {
     if (q.user.role !== 'Super Admin' && String(u.dealership) !== String(q.tenantId)) throw httpError(404, 'User not found');
     if (String(u.id) === String(q.user.id) && b.active === false)
       throw httpError(400, 'You cannot deactivate your own account');
+    if (b.active === true && u.role === 'Dealer Admin' &&
+      !(await Dealership.exists({ _id: u.dealership, active: true }))) {
+      throw httpError(409, 'Activate the dealership before activating its Dealer Admin account');
+    }
     const changedRole = false,
       changedAccess = b.active !== undefined && b.active !== u.active;
     Object.assign(u, b, b.email ? { email: b.email.toLowerCase() } : {});
@@ -211,6 +303,27 @@ app.patch('/api/users/:id', permit('users'), async (q, s, n) => {
     next(e);
   }
 });
+app.delete('/api/users/:id', permit('users'), async (q, s, n) => {
+  try {
+    if (q.user.role !== 'Super Admin') throw httpError(403, 'Only platform administrators can delete Dealer Admin accounts');
+    const user = await User.findById(q.params.id);
+    if (!user || user.role !== 'Dealer Admin') throw httpError(404, 'Dealer Admin not found');
+    await audit(Audit, q.user.id, 'DELETE', 'User', user.id, {
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      dealership: user.dealership,
+    }, { actorName: q.user.name, role: q.user.role, requestId: q.requestId });
+    await Promise.all([
+      Session.deleteMany({ user: user.id }),
+      PasswordReset.deleteMany({ user: user.id }),
+    ]);
+    await User.deleteOne({ _id: user.id });
+    s.status(204).end();
+  } catch (e) {
+    n(e);
+  }
+});
 app.post('/api/users/:id/revoke-sessions', permit('users'), async (q, s, n) => {
   try {
     const u = await User.findById(q.params.id);
@@ -223,6 +336,37 @@ app.post('/api/users/:id/revoke-sessions', permit('users'), async (q, s, n) => {
   } catch (e) {
     next(e);
   }
+});
+const managedRecords = {
+  users: { Model: User, fields: ['name', 'email', 'phone', 'operationalProfile', 'active'] },
+  vehicles: { Model: Vehicle, fields: ['registration', 'make', 'model', 'year', 'fuelType', 'transmission', 'odometer', 'lifecycle'] },
+  enquiries: { Model: Enquiry, fields: ['status', 'askingPrice', 'source', 'followUp', 'nextAction', 'notes'] },
+  inspections: { Model: Inspection, fields: ['dueDate', 'assignedTo', 'status'] },
+  'parking-slots': { Model: ParkingSlot, fields: ['code', 'zone', 'row', 'number', 'type', 'status', 'enabled'] },
+  'work-orders': { Model: WorkOrder, fields: ['title', 'description', 'priority', 'assignedTo', 'status', 'notes'] },
+  sales: { Model: Sale, fields: ['targetPrice', 'agreedPrice', 'status', 'reservedUntil'] },
+};
+app.patch('/api/records/:resource/:id', permit('users'), async (q, s, n) => {
+  try {
+    const config = managedRecords[q.params.resource];
+    if (!config) throw httpError(404, 'Record type not found');
+    const changes = Object.fromEntries(Object.entries(q.body || {}).filter(([key]) => config.fields.includes(key)));
+    if (!Object.keys(changes).length) throw httpError(400, 'Provide at least one editable field');
+    const record = await config.Model.findOneAndUpdate(tenantFilter(q, { _id: q.params.id }), changes, { new: true, runValidators: true });
+    if (!record) throw httpError(404, 'Record not found');
+    await audit(Audit, q.user.id, 'UPDATE', config.Model.modelName, record.id, changes, { dealership: q.tenantId, actorName: q.user.name, role: q.user.role, requestId: q.requestId });
+    s.json(record);
+  } catch (e) { n(e); }
+});
+app.delete('/api/records/:resource/:id', permit('users'), async (q, s, n) => {
+  try {
+    const config = managedRecords[q.params.resource];
+    if (!config) throw httpError(404, 'Record type not found');
+    const record = await config.Model.findOneAndDelete(tenantFilter(q, { _id: q.params.id }));
+    if (!record) throw httpError(404, 'Record not found');
+    await audit(Audit, q.user.id, 'DELETE', config.Model.modelName, record.id, {}, { dealership: q.tenantId, actorName: q.user.name, role: q.user.role, requestId: q.requestId });
+    s.status(204).end();
+  } catch (e) { n(e); }
 });
 app.post(
   '/api/auth/password-reset/request',
@@ -281,6 +425,16 @@ app.post(
 );
 const page = paginatedQuery;
 app.get('/api/vehicles', permit('vehicles'), page(Vehicle));
+app.post('/api/vehicles', permit('vehicles'), async (q, s, n) => {
+  try {
+    const input = z.object({ registration: z.string().min(2).max(30), make: z.string().min(1).max(80), model: z.string().min(1).max(80), year: z.coerce.number().int().min(1900).max(2100).optional(), fuelType: z.string().max(40).optional(), transmission: z.string().max(40).optional(), odometer: z.coerce.number().min(0).optional() }).parse(q.body);
+    const exists = await Vehicle.exists(tenantFilter(q, { registration: input.registration }));
+    if (exists) throw httpError(409, 'A vehicle with this registration already exists in this dealership');
+    const vehicle = await Vehicle.create({ ...input, dealership: q.tenantId, vehicleCode: id('VEH'), lifecycle: 'Vehicle Registered', activities: [{ type: 'created', message: 'Vehicle manually added', actor: q.user.id }] });
+    await audit(Audit, q.user.id, 'CREATE', 'Vehicle', vehicle.id, { registration: vehicle.registration });
+    s.status(201).json(vehicle);
+  } catch (e) { n(e); }
+});
 app.get('/api/vehicles/:id', permit('vehicles'), async (q, s, n) => {
   try {
     const v = await Vehicle.findById(q.params.id).populate('currentLocation');
@@ -338,15 +492,16 @@ app.post('/api/enquiries', permit('enquiries'), async (q, s, n) => {
       ...(b.vehicle.chassis ? [{ chassis: b.vehicle.chassis }] : []),
       ...(b.vehicle.registration ? [{ registration: b.vehicle.registration }] : []),
     ];
-    let vehicle = identifiers.length ? await Vehicle.findOne({ $or: identifiers }) : null;
+    let vehicle = identifiers.length ? await Vehicle.findOne(tenantFilter(q, { $or: identifiers })) : null;
     const duplicate = !!vehicle;
     if (!vehicle)
       vehicle = await Vehicle.create({
         ...b.vehicle,
+        dealership: q.tenantId,
         vehicleCode: id('VEH'),
         activities: [{ type: 'created', message: 'Vehicle master created', actor: q.user.id }],
       });
-    const person = await Person.create({ ...b.seller, kind: 'seller' });
+    const person = await Person.create({ ...b.seller, dealership: q.tenantId, kind: 'seller' });
     await OwnershipPeriod.create({
       vehicle: vehicle.id,
       owner: person.id,
@@ -354,6 +509,7 @@ app.post('/api/enquiries', permit('enquiries'), async (q, s, n) => {
       source: 'Seller declared',
     });
     const enq = await Enquiry.create({
+      dealership: q.tenantId,
       enquiryCode: id('ENQ'),
       vehicle: vehicle.id,
       person: person.id,
@@ -466,13 +622,27 @@ const documentStatuses = [
   'Rejected',
   'On Hold',
 ];
-async function findVehicleByReference(reference) {
+async function findVehicleByReference(reference, req) {
   const value = reference.trim();
   const matches = [{ vehicleCode: value }, { registration: value }];
   if (/^[a-f\d]{24}$/i.test(value)) matches.unshift({ _id: value });
-  return Vehicle.findOne({ $or: matches });
+  const filter = { $or: matches };
+  return Vehicle.findOne(req.tenantId ? tenantFilter(req, filter) : filter);
 }
-app.get('/api/documents', permit('documents'), page(Document));
+app.get('/api/documents', permit('documents'), async (q, s, n) => {
+  try {
+    if (q.tenantId) {
+      const vehicleIds = await Vehicle.distinct('_id', { dealership: q.tenantId });
+      await Document.updateMany(
+        { dealership: { $in: [null] }, vehicle: { $in: vehicleIds } },
+        { $set: { dealership: q.tenantId } }
+      );
+    }
+    await page(Document)(q, s, n);
+  } catch (e) {
+    n(e);
+  }
+});
 app.get('/api/documents/requirements', permit('documents'), async (q, s, n) => {
   try {
     s.json(await DocumentRequirement.find({ enabled: true }).sort({ name: 1 }));
@@ -500,10 +670,10 @@ app.post('/api/documents/requirements', permit('settings'), async (q, s, n) => {
 });
 app.get('/api/vehicles/:vehicleId/documents', permit('documents'), async (q, s, n) => {
   try {
-    const vehicle = await findVehicleByReference(q.params.vehicleId);
+    const vehicle = await findVehicleByReference(q.params.vehicleId, q);
     if (!vehicle) throw httpError(404, 'Vehicle not found. Use a valid vehicle ID, registration, or vehicle code.');
     const [docs, requirements] = await Promise.all([
-      Document.find({ vehicle: vehicle.id })
+      Document.find(tenantFilter(q, { vehicle: vehicle.id }))
         .populate('person submittedBy reviewer')
         .sort({ createdAt: -1 }),
       DocumentRequirement.find({ enabled: true }),
@@ -545,11 +715,12 @@ app.post('/api/documents', permit('documents'), upload.single('file'), async (q,
         consentRecorded: z.enum(['true', 'false']).optional(),
       })
       .parse(q.body);
-    const vehicle = await findVehicleByReference(input.vehicle);
+    const vehicle = await findVehicleByReference(input.vehicle, q);
     if (!vehicle) throw httpError(404, 'Vehicle not found. Use a valid vehicle ID, registration, or vehicle code.');
     const file = await storageProvider.save(q.file.buffer);
     const doc = await Document.create({
       ...input,
+      dealership: q.tenantId,
       vehicle: vehicle.id,
       ...file,
       originalName: q.file.originalname.replace(/[\\/]/g, '_').slice(0, 180),

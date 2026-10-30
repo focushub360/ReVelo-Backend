@@ -16,7 +16,14 @@ export function paginatedQuery(Model, baseFilter = {}) {
         filter.$or = ['registration', 'vehicleCode', 'enquiryCode', 'code', 'name'].map((field) => ({
           [field]: { $regex: req.query.search, $options: 'i' },
         }));
-      const populatePaths = ['vehicle', 'person', 'assignedTo', 'activeVehicle', 'currentLocation'].filter(
+      const populatePaths = [
+        'vehicle',
+        'person',
+        'assignedTo',
+        'activeVehicle',
+        'reservationVehicle',
+        'currentLocation',
+      ].filter(
         (path) => Model.schema.path(path)
       );
       const itemsQuery = Model.find(filter)

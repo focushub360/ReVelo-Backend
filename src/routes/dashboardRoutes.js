@@ -9,6 +9,8 @@ import { Acquisition } from '../models/acquisition.js';
 import { Sale } from '../models/sale.js';
 import { QualityCheck } from '../models/qualityCheck.js';
 import { Inspection } from '../models/inspection.js';
+import { Audit } from '../models/audit.js';
+import { User } from '../models/user.js';
 import { tenantFilter } from '../middleware/tenant.js';
 
 const router = Router();
@@ -32,6 +34,10 @@ router.get('/dashboard', async (req, res, next) => {
       purchases,
       sales,
       profit,
+      lifecycleBreakdown,
+      openWorkOrders,
+      recentActivity,
+      employees,
     ] = await Promise.all([
       Vehicle.countDocuments(scope), Enquiry.countDocuments({ ...scope, type: 'seller', status: 'Open' }),
       Document.countDocuments({ ...scope, status: { $in: ['Submitted', 'Under Review', 'On Hold', 'Mismatch'] } }),
@@ -49,6 +55,11 @@ router.get('/dashboard', async (req, res, next) => {
         { $match: { ...scope, status: 'Closed' } },
         { $group: { _id: null, realised: { $sum: '$actualProfit' } } },
       ]),
+      Vehicle.aggregate([{ $match: scope }, { $group: { _id: '$lifecycle', count: { $sum: 1 } } }]),
+      WorkOrder.find({ ...scope, status: { $in: ['Open', 'Assigned', 'In Progress', 'Waiting for Parts', 'Rework Required'] } })
+        .sort({ updatedAt: -1 }).limit(5).select('workOrderCode title priority status updatedAt').populate('vehicle', 'registration make model vehicleCode').lean(),
+      Audit.find(scope).sort({ createdAt: -1 }).limit(6).select('action entity actorName createdAt').lean(),
+      User.countDocuments({ ...scope, active: true }),
     ]);
     res.json({
       vehicles,
@@ -66,6 +77,10 @@ router.get('/dashboard', async (req, res, next) => {
       completedPurchases: purchases,
       completedSales: sales,
       realisedProfit: profit[0]?.realised || 0,
+      lifecycleBreakdown,
+      openWorkOrders,
+      recentActivity,
+      activeEmployees: employees,
     });
   } catch (error) {
     next(error);
