@@ -91,6 +91,24 @@ router.get('/acquisitions/:id', permit('acquisitions'), async (req, res, next) =
     next(error);
   }
 });
+router.delete('/acquisitions/:id', permit('acquisitions'), async (req, res, next) => {
+  try {
+    const acquisition = await Acquisition.findOne(tenantFilter(req, { _id: req.params.id }));
+    if (!acquisition) throw httpError(404, 'Acquisition not found');
+    if (['Offer Accepted', 'Purchase Pending', 'Purchased'].includes(acquisition.status))
+      throw httpError(409, 'An accepted or completed purchase cannot be deleted');
+    const hasOffers = await AcquisitionOffer.exists({
+      dealership: req.tenantId,
+      acquisition: acquisition.id,
+    });
+    if (hasOffers || acquisition.payments.length)
+      throw httpError(409, 'An acquisition with offers or payments cannot be deleted');
+    await acquisition.deleteOne();
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
 router.post('/acquisitions/:id/valuation', permit('acquisitions'), async (req, res, next) => {
   try {
     const values = z
@@ -105,7 +123,12 @@ router.post('/acquisitions/:id/valuation', permit('acquisitions'), async (req, r
       .parse(req.body);
     const acquisition = await Acquisition.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!acquisition) throw httpError(404, 'Acquisition not found');
+    if (!['Valuation Requested', 'On Hold', 'Reinspection Requested', 'Revised Valuation Requested', 'Approved for Negotiation'].includes(acquisition.status))
+      throw httpError(409, 'Valuation cannot be edited after negotiation or purchase begins');
+    if (await AcquisitionOffer.exists({ dealership: req.tenantId, acquisition: acquisition.id }))
+      throw httpError(409, 'Valuation cannot be edited after an offer has been created');
     Object.assign(acquisition, values);
+    if (acquisition.status !== 'Valuation Requested') acquisition.status = 'Revised Valuation Requested';
     const check = await eligibility(acquisition.vehicle, req);
     acquisition.valuationSnapshots.push(snapshot(acquisition, check, req.user.id, values.reason));
     acquisition.history.push({

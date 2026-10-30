@@ -12,6 +12,13 @@ import { tenantFilter } from '../middleware/tenant.js';
 
 const router = Router();
 const statuses = ['Available', 'Reserved', 'Occupied', 'Blocked', 'Maintenance'];
+function handleSlotError(error, next) {
+  if (error?.code === 11000) {
+    next(httpError(409, 'A parking space with this code or zone, row, and number already exists'));
+    return;
+  }
+  next(error);
+}
 async function findVehicle(vehicleReference, req) {
   const matches = [{ vehicleCode: vehicleReference }, { registration: vehicleReference }];
   if (mongoose.isObjectIdOrHexString(vehicleReference)) matches.unshift({ _id: vehicleReference });
@@ -27,7 +34,72 @@ const slotInput = z.object({
   capacity: z.coerce.number().int().min(1).max(10).optional(),
   vehicleConstraints: z.array(z.string()).optional(),
   status: z.enum(statuses).optional(),
+  vehicle: z.string().optional(),
 });
+async function setSlotAssignment(req, slot, status, vehicleReference) {
+  if (!['Reserved', 'Occupied'].includes(status)) {
+    slot.status = status;
+    await slot.save();
+    return slot;
+  }
+  if (!vehicleReference) throw httpError(400, `Select a vehicle before setting a slot to ${status}`);
+  const vehicle = await findVehicle(vehicleReference, req);
+  if (!vehicle) throw httpError(404, 'Vehicle not found. Select a valid vehicle registration.');
+  if (status === 'Reserved' && slot.status === 'Occupied')
+    throw httpError(409, 'Release the occupied vehicle before reserving this slot');
+  if (
+    status === 'Occupied' &&
+    vehicle.currentLocation &&
+    String(vehicle.currentLocation) !== String(slot.id)
+  ) {
+    throw httpError(409, 'Vehicle already has an active physical location');
+  }
+  if (
+    status === 'Occupied' &&
+    slot.reservationVehicle &&
+    String(slot.reservationVehicle) !== String(vehicle.id)
+  ) {
+    throw httpError(409, 'This slot is reserved for a different vehicle');
+  }
+  if (
+    status === 'Occupied' &&
+    slot.activeVehicle &&
+    String(slot.activeVehicle) !== String(vehicle.id)
+  ) {
+    throw httpError(409, 'Release the currently assigned vehicle before changing this slot');
+  }
+  if (status === 'Reserved') {
+    slot.status = status;
+    slot.reservationVehicle = vehicle.id;
+    slot.reservedUntil = new Date(Date.now() + 2 * 3600e3);
+    await slot.save();
+    await Movement.create({
+      dealership: req.tenantId,
+      vehicle: vehicle.id,
+      to: slot.id,
+      action: 'Reserve',
+      by: req.user.id,
+    });
+    return slot;
+  }
+  slot.status = status;
+  slot.activeVehicle = vehicle.id;
+  slot.occupiedAt = new Date();
+  slot.reservationVehicle = undefined;
+  slot.reservedUntil = undefined;
+  await slot.save();
+  vehicle.currentLocation = slot.id;
+  await vehicle.save();
+  await Movement.create({
+    dealership: req.tenantId,
+    vehicle: vehicle.id,
+    to: slot.id,
+    action: 'Occupy',
+    by: req.user.id,
+    physicalConfirmation: true,
+  });
+  return slot;
+}
 router.get('/parking/zones', permit('parking'), async (req, res, next) => {
   try {
     res.json(await ParkingZone.find(tenantFilter(req)).sort({ name: 1 }));
@@ -73,27 +145,84 @@ router.get('/parking/slots', permit('parking'), paginatedQuery(ParkingSlot));
 router.post('/parking/slots', permit('parking'), async (req, res, next) => {
   try {
     const input = slotInput.parse(req.body);
-    const slot = await ParkingSlot.create({ ...input, dealership: req.tenantId });
+    const { vehicle, status = 'Available', ...slotData } = input;
+    if (['Reserved', 'Occupied'].includes(status) && !vehicle)
+      throw httpError(400, `Select a vehicle before setting a slot to ${status}`);
+    if (['Reserved', 'Occupied'].includes(status)) {
+      const vehicleRecord = await findVehicle(vehicle, req);
+      if (!vehicleRecord)
+        throw httpError(404, 'Vehicle not found. Select a valid vehicle registration.');
+      if (
+        status === 'Occupied' &&
+        vehicleRecord.currentLocation
+      ) {
+        throw httpError(409, 'Vehicle already has an active physical location');
+      }
+    }
+    const slot = await ParkingSlot.create({
+      ...slotData,
+      status: 'Available',
+      dealership: req.tenantId,
+    });
+    if (['Reserved', 'Occupied'].includes(status))
+      await setSlotAssignment(req, slot, status, vehicle);
     res.status(201).json(slot);
   } catch (error) {
-    next(error);
+    handleSlotError(error, next);
   }
 });
 router.patch('/parking/slots/:id', permit('parking'), async (req, res, next) => {
   try {
     const slot = await ParkingSlot.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!slot) throw httpError(404, 'Parking slot not found');
+    const update = slotInput.partial().extend({ enabled: z.boolean().optional() }).parse(req.body);
     if (
       ['Occupied', 'Reserved'].includes(slot.status) &&
-      (req.body.enabled === false || req.body.status === 'Available')
+      update.enabled === false
     )
-      throw httpError(409, 'Release the active assignment before changing this slot');
-    const update = slotInput.partial().extend({ enabled: z.boolean().optional() }).parse(req.body);
-    Object.assign(slot, update);
-    await slot.save();
+      throw httpError(409, 'Release the active assignment before disabling this slot');
+    if (slot.status === 'Occupied' && update.status && update.status !== 'Occupied')
+      throw httpError(409, 'Release the occupied vehicle before changing this slot status');
+    if (
+      slot.status === 'Reserved' &&
+      update.status &&
+      update.status !== 'Reserved' &&
+      update.status !== 'Occupied'
+    )
+      throw httpError(409, 'Cancel the reservation before changing this slot status');
+    if (
+      slot.status === 'Reserved' &&
+      update.status === 'Occupied' &&
+      String(update.vehicle || '') !== String(slot.reservationVehicle || '')
+    )
+      throw httpError(409, 'A reservation can only be occupied by its assigned vehicle');
+    if (
+      slot.status === 'Reserved' &&
+      update.status === 'Reserved' &&
+      update.vehicle &&
+      String(update.vehicle) !== String(slot.reservationVehicle || '')
+    )
+      throw httpError(409, 'Cancel the reservation before assigning it to a different vehicle');
+    const { vehicle, status, ...slotData } = update;
+    Object.assign(slot, slotData);
+    if (status) {
+      const currentVehicle = status === 'Occupied' ? slot.activeVehicle : slot.reservationVehicle;
+      const assignmentUnchanged =
+        ['Reserved', 'Occupied'].includes(status) &&
+        slot.status === status &&
+        currentVehicle &&
+        String(currentVehicle) === String(vehicle || currentVehicle);
+      if (assignmentUnchanged) await slot.save();
+      else await setSlotAssignment(
+        req,
+        slot,
+        status,
+        vehicle || slot.activeVehicle || slot.reservationVehicle
+      );
+    } else await slot.save();
     res.json(slot);
   } catch (error) {
-    next(error);
+    handleSlotError(error, next);
   }
 });
 router.delete('/parking/slots/:id', permit('parking'), async (req, res, next) => {
