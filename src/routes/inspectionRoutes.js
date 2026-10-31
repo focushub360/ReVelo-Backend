@@ -23,7 +23,7 @@ const findings = z.array(
     estimatedRepairCost: z.coerce.number().min(0).optional(),
   })
 );
-router.get('/inspection-templates', permit('inspections'), async (req, res, next) => {
+router.get('/inspection-templates', permit('inspections:view_assigned'), async (req, res, next) => {
   try {
     res.json(await InspectionTemplate.find(tenantFilter(req, { enabled: true })).sort({ kind: 1, name: 1 }));
   } catch (error) {
@@ -54,8 +54,10 @@ router.post('/inspection-templates', permit('settings'), async (req, res, next) 
     next(error);
   }
 });
-router.get('/inspections', permit('inspections'), paginatedQuery(Inspection));
-router.post('/inspections', permit('inspections'), async (req, res, next) => {
+router.get('/inspections', permit('inspections:view_assigned'), paginatedQuery(Inspection, (req) =>
+  req.user.role === 'Dealer Admin' ? {} : { assignedTo: req.user.id }
+));
+router.post('/inspections', permit('inspections:assign'), async (req, res, next) => {
   try {
     const input = z
       .object({
@@ -99,12 +101,13 @@ router.post('/inspections', permit('inspections'), async (req, res, next) => {
     next(error);
   }
 });
-router.get('/inspections/:id', permit('inspections'), async (req, res, next) => {
+router.get('/inspections/:id', permit('inspections:view_assigned'), async (req, res, next) => {
   try {
     const report = await Inspection.findOne(tenantFilter(req, { _id: req.params.id })).populate(
       'vehicle assignedTo assignedBy reviewer template parentReport'
     );
     if (!report) throw httpError(404, 'Inspection not found');
+    if (!ownOrDealer(req, report.assignedTo)) throw httpError(403, 'Only the assigned employee may view this report');
     const revisions = await Inspection.find(tenantFilter(req, {
       $or: [{ _id: report.id }, { parentReport: report.parentReport || report.id }],
     }))
@@ -115,7 +118,7 @@ router.get('/inspections/:id', permit('inspections'), async (req, res, next) => 
     next(error);
   }
 });
-router.patch('/inspections/:id', permit('inspections'), async (req, res, next) => {
+router.patch('/inspections/:id', permit('inspections:manage_assigned'), async (req, res, next) => {
   try {
     const input = z
       .object({
@@ -153,7 +156,7 @@ router.patch('/inspections/:id', permit('inspections'), async (req, res, next) =
     next(error);
   }
 });
-router.post('/inspections/:id/submit', permit('inspections'), async (req, res, next) => {
+router.post('/inspections/:id/submit', permit('inspections:manage_assigned'), async (req, res, next) => {
   try {
     const report = await Inspection.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!report) throw httpError(404, 'Inspection not found');
@@ -175,7 +178,7 @@ router.post('/inspections/:id/submit', permit('inspections'), async (req, res, n
     next(error);
   }
 });
-router.post('/inspections/:id/review', permit('inspections'), async (req, res, next) => {
+router.post('/inspections/:id/review', permit('inspections:review'), async (req, res, next) => {
   try {
     const { approved, note } = z
       .object({ approved: z.boolean(), note: z.string().max(2000).optional() })
@@ -198,7 +201,7 @@ router.post('/inspections/:id/review', permit('inspections'), async (req, res, n
     next(error);
   }
 });
-router.post('/inspections/:id/revision', permit('inspections'), async (req, res, next) => {
+router.post('/inspections/:id/revision', permit('inspections:assign'), async (req, res, next) => {
   try {
     const { reason } = z.object({ reason: z.string().min(3).max(2000) }).parse(req.body);
     const previous = await Inspection.findOne(tenantFilter(req, { _id: req.params.id }));

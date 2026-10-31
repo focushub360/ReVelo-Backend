@@ -33,8 +33,10 @@ const workOrderInput = z.object({
   notes: z.string().optional(),
   reinspectionRequired: z.boolean().optional(),
 });
-router.get('/work-orders', permit('workorders'), paginatedQuery(WorkOrder));
-router.post('/work-orders', permit('workorders'), async (req, res, next) => {
+router.get('/work-orders', permit('workorders:view_assigned'), paginatedQuery(WorkOrder, (req) =>
+  req.user.role === 'Dealer Admin' ? {} : { assignedTo: req.user.id }
+));
+router.post('/work-orders', permit('workorders:manage_assigned'), async (req, res, next) => {
   try {
     const input = workOrderInput.parse(req.body);
     const acquisition = await Acquisition.findOne(tenantFilter(req, { vehicle: input.vehicle, status: 'Purchased' }));
@@ -52,7 +54,7 @@ router.post('/work-orders', permit('workorders'), async (req, res, next) => {
     next(error);
   }
 });
-router.post('/work-orders/from-inspection/:inspectionId', permit('workorders'), async (req, res, next) => {
+router.post('/work-orders/from-inspection/:inspectionId', permit('workorders:manage_assigned'), async (req, res, next) => {
   try {
     const inspection = await Inspection.findOne(tenantFilter(req, { _id: req.params.inspectionId }));
     if (!inspection) throw httpError(404, 'Inspection not found');
@@ -82,18 +84,19 @@ router.post('/work-orders/from-inspection/:inspectionId', permit('workorders'), 
     next(error);
   }
 });
-router.get('/work-orders/:id', permit('workorders'), async (req, res, next) => {
+router.get('/work-orders/:id', permit('workorders:view_assigned'), async (req, res, next) => {
   try {
     const workOrder = await WorkOrder.findOne(tenantFilter(req, { _id: req.params.id })).populate(
       'vehicle acquisition inspection assignedTo'
     );
     if (!workOrder) throw httpError(404, 'Work order not found');
+    if (!ownOrDealer(req, workOrder.assignedTo)) throw httpError(403, 'Only the assigned technician may view this work order');
     res.json(workOrder);
   } catch (error) {
     next(error);
   }
 });
-router.patch('/work-orders/:id', permit('workorders'), async (req, res, next) => {
+router.patch('/work-orders/:id', permit('workorders:manage_assigned'), async (req, res, next) => {
   try {
     const body = z
       .object({
@@ -121,7 +124,7 @@ router.patch('/work-orders/:id', permit('workorders'), async (req, res, next) =>
     next(error);
   }
 });
-router.post('/work-orders/:id/expenses', permit('workorders'), async (req, res, next) => {
+router.post('/work-orders/:id/expenses', permit('workorders:manage_assigned'), async (req, res, next) => {
   try {
     const expense = z
       .object({
@@ -148,7 +151,7 @@ router.post('/work-orders/:id/expenses', permit('workorders'), async (req, res, 
     next(error);
   }
 });
-router.post('/work-orders/:id/scope', permit('workorders'), async (req, res, next) => {
+router.post('/work-orders/:id/scope', permit('workorders:manage_assigned'), async (req, res, next) => {
   try {
     const change = z
       .object({
@@ -174,8 +177,8 @@ router.post('/work-orders/:id/scope', permit('workorders'), async (req, res, nex
     next(error);
   }
 });
-router.get('/quality-checks', permit('quality'), paginatedQuery(QualityCheck));
-router.post('/quality-checks', permit('quality'), async (req, res, next) => {
+router.get('/quality-checks', permit('qa:review'), paginatedQuery(QualityCheck));
+router.post('/quality-checks', permit('qa:review'), async (req, res, next) => {
   try {
     const body = z
       .object({
@@ -200,7 +203,7 @@ router.post('/quality-checks', permit('quality'), async (req, res, next) => {
     next(error);
   }
 });
-router.patch('/quality-checks/:id', permit('quality'), async (req, res, next) => {
+router.patch('/quality-checks/:id', permit('qa:review'), async (req, res, next) => {
   try {
     const body = z
       .object({
@@ -227,22 +230,22 @@ router.patch('/quality-checks/:id', permit('quality'), async (req, res, next) =>
     next(error);
   }
 });
-router.post('/quality-checks/:id/decision', permit('quality'), async (req, res, next) => {
+router.post('/quality-checks/:id/decision', permit('qa:review'), async (req, res, next) => {
   try {
     const { passed, note } = z
       .object({ passed: z.boolean(), note: z.string().max(2000).optional() })
       .parse(req.body);
     const qa = await QualityCheck.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!qa) throw httpError(404, 'Quality check not found');
-    const open = await WorkOrder.exists({
+    const open = await WorkOrder.exists(tenantFilter(req, {
       vehicle: qa.vehicle,
       status: { $nin: ['Completed', 'Cancelled'] },
-    });
-    const critical = await WorkOrder.exists({
+    }));
+    const critical = await WorkOrder.exists(tenantFilter(req, {
       vehicle: qa.vehicle,
       priority: 'Critical',
       status: { $ne: 'Completed' },
-    });
+    }));
     const failedRequired = qa.checks.some((c) => c.required && !c.passed);
     if (passed && (open || critical || failedRequired))
       throw httpError(400, 'Required work orders and quality checks must pass');
@@ -258,12 +261,12 @@ router.post('/quality-checks/:id/decision', permit('quality'), async (req, res, 
       actor: req.user.id,
     });
     await qa.save();
-    await Vehicle.findByIdAndUpdate(qa.vehicle, {
+    await Vehicle.findOneAndUpdate(tenantFilter(req, { _id: qa.vehicle }), {
       lifecycle: passed ? 'Ready for Sale' : 'Under Refurbishment',
     });
     if (!passed)
       await WorkOrder.updateMany(
-        { vehicle: qa.vehicle, status: 'Completed', reinspectionRequired: true },
+        tenantFilter(req, { vehicle: qa.vehicle, status: 'Completed', reinspectionRequired: true }),
         { $set: { status: 'Rework Required' } }
       );
     res.json(qa);

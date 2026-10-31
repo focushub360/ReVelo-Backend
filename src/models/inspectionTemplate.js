@@ -15,6 +15,7 @@ export const InspectionTemplate = mongoose.model(
   'InspectionTemplate',
   new Schema(
     {
+      dealership: { type: Schema.Types.ObjectId, ref: 'Dealership', required: true, index: true },
       name: { type: String, required: true },
       kind: { type: String, enum: ['mechanical', 'structural'], required: true },
       enabled: { type: Boolean, default: true },

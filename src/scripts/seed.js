@@ -26,6 +26,8 @@ const collections = [
   User, Dealership,
 ];
 for (const Model of collections) await Model.deleteMany({});
+await DocumentRequirement.collection.dropIndex('category_1').catch(() => {});
+await DocumentRequirement.syncIndexes();
 console.log('Existing ReVelo development data cleared.');
 
 const passwordHash = await bcrypt.hash('ChangeMe123!', 12);
@@ -60,8 +62,10 @@ const sellerPortal = await upsert(User, { email: 'seller@apex.revelo.test' }, { 
 const buyerPortal = await upsert(User, { email: 'buyer@apex.revelo.test' }, { name: 'Nisha Kapoor', email: 'buyer@apex.revelo.test', passwordHash, role: 'Buyer & Seller', partyType: 'Buyer', dealership: apex.id, active: true });
 await employee(coast, 'parking@coast.revelo.test', 'Kavya Rao', 'Parking Manager');
 
-for (const [name, expiry] of [['Registration Certificate', false], ['Insurance', true], ['Purchase Agreement', false]]) {
-  await upsert(DocumentRequirement, { category: name }, { name, category: name, description: `${name} required before purchase`, requiredForAcquisition: true, requiresExpiry: expiry, enabled: true });
+for (const dealership of [apex, coast]) {
+  for (const [name, expiry] of [['Registration Certificate', false], ['Insurance', true], ['Purchase Agreement', false]]) {
+    await upsert(DocumentRequirement, { dealership: dealership.id, category: name }, { dealership: dealership.id, name, category: name, description: `${name} required before purchase`, requiredForAcquisition: true, requiresExpiry: expiry, enabled: true });
+  }
 }
 const seller = await upsert(Person, { dealership: apex.id, email: sellerPortal.email }, { dealership: apex.id, name: sellerPortal.name, email: sellerPortal.email, phone: '9810003003', kind: 'seller', maskedIdentity: 'PAN •••• 4821' });
 const buyer = await upsert(Person, { dealership: apex.id, email: buyerPortal.email }, { dealership: apex.id, name: buyerPortal.name, email: buyerPortal.email, phone: '9810004004', kind: 'buyer' });

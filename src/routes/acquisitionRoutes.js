@@ -178,7 +178,7 @@ router.post('/acquisitions/:id/offers', permit('acquisitions'), async (req, res,
     const acquisition = await Acquisition.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!acquisition || acquisition.status !== 'Approved for Negotiation')
       throw httpError(400, 'Acquisition is not approved for negotiation');
-    const previous = await AcquisitionOffer.findOne({ dealership: req.tenantId,
+    const previous = await AcquisitionOffer.findOne({
       dealership: req.tenantId, acquisition: acquisition.id,
       status: { $in: ['Draft', 'Sent'] },
     }).sort({ createdAt: -1 });
@@ -187,6 +187,7 @@ router.post('/acquisitions/:id/offers', permit('acquisitions'), async (req, res,
       await previous.save();
     }
     const offer = await AcquisitionOffer.create({
+      dealership: req.tenantId,
       acquisition: acquisition.id,
       amount,
       expiresAt,
@@ -295,11 +296,11 @@ router.post('/acquisitions/:id/handover', permit('acquisitions'), async (req, re
     if (releaseParking) {
       const vehicle = await Vehicle.findOne(tenantFilter(req, { _id: acquisition.vehicle }));
       if (vehicle?.currentLocation) {
-        await ParkingSlot.findByIdAndUpdate(vehicle.currentLocation, {
+        await ParkingSlot.findOneAndUpdate(tenantFilter(req, { _id: vehicle.currentLocation }), {
           $set: { status: 'Available' },
           $unset: { activeVehicle: 1, occupiedAt: 1 },
         });
-        await Vehicle.findByIdAndUpdate(vehicle.id, { $unset: { currentLocation: 1 } });
+        await Vehicle.findOneAndUpdate(tenantFilter(req, { _id: vehicle.id }), { $unset: { currentLocation: 1 } });
       }
     }
     res.json(acquisition);

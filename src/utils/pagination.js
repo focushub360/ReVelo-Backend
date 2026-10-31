@@ -4,7 +4,8 @@ export function paginatedQuery(Model, baseFilter = {}) {
       const page = Math.max(Number(req.query.page) || 1, 1);
       const limit = Math.min(Number(req.query.limit) || 20, 100);
       // A tenant is derived from the server session, never from request parameters.
-      const filter = req.tenantId ? { ...baseFilter, dealership: req.tenantId } : { ...baseFilter };
+      const scopedBaseFilter = typeof baseFilter === 'function' ? baseFilter(req) : baseFilter;
+      const filter = req.tenantId ? { ...scopedBaseFilter, dealership: req.tenantId } : { ...scopedBaseFilter };
       if (req.query.status) filter.status = req.query.status;
       if (req.query.assignedTo) filter.assignedTo = req.query.assignedTo;
       if (req.query.from || req.query.to) {
