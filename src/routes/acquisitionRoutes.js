@@ -59,6 +59,29 @@ function snapshot(acquisition, check, user, reason) {
   };
 }
 router.get('/acquisitions', permit('acquisitions'), paginatedQuery(Acquisition));
+router.get('/acquisition-offers', permit('acquisitions'), async (req, res, next) => {
+  try {
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Number(req.query.limit) || 100, 100);
+    const filter = tenantFilter(req);
+    const [items, total] = await Promise.all([
+      AcquisitionOffer.find(filter)
+        .populate({
+          path: 'acquisition',
+          select: 'vehicle status',
+          populate: { path: 'vehicle', select: 'registration vehicleCode make model' },
+        })
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      AcquisitionOffer.countDocuments(filter),
+    ]);
+    res.json({ items, page, total, pages: Math.ceil(total / limit) });
+  } catch (error) {
+    next(error);
+  }
+});
 router.post('/acquisitions', permit('acquisitions'), async (req, res, next) => {
   try {
     const data = input.parse(req.body);
