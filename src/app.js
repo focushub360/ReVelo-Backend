@@ -7,6 +7,7 @@ import { id } from './utils/core.js';
 import { authenticate, csrf, tenantContext, requireTenant } from './middleware/index.js';
 import healthRoutes from './routes/healthRoutes.js';
 import publicSellerRoutes from './routes/publicSellerRoutes.js';
+import storefrontRoutes from './routes/storefrontRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import publicLeadSettingsRoutes from './routes/publicLeadSettingsRoutes.js';
 import dealerRoutes from './routes/dealerRoutes.js';
@@ -45,6 +46,7 @@ app.use((req, res, next) => {
 
 app.use('/api', healthRoutes);
 app.use('/api', publicSellerRoutes);
+app.use('/api', storefrontRoutes);
 app.use('/api', authRoutes);
 app.use('/api', (req, res, next) =>
   ['/auth/password-reset/request', '/auth/password-reset/confirm', '/auth/invitations/accept'].includes(req.path)
