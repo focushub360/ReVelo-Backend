@@ -36,6 +36,20 @@ const workOrderInput = z.object({
 router.get('/work-orders', permit('workorders:view_assigned'), paginatedQuery(WorkOrder, (req) =>
   req.user.role === 'Dealer Admin' ? {} : { assignedTo: req.user.id }
 ));
+router.get('/work-orders/eligible-vehicles', permit('workorders:manage_assigned'), async (req, res, next) => {
+  try {
+    const acquisitions = await Acquisition.find(
+      tenantFilter(req, { status: 'Purchased' })
+    )
+      .select('vehicle')
+      .populate('vehicle', 'registration vehicleCode make model variant')
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json(acquisitions.map((acquisition) => acquisition.vehicle).filter(Boolean));
+  } catch (error) {
+    next(error);
+  }
+});
 router.post('/work-orders', permit('workorders:manage_assigned'), async (req, res, next) => {
   try {
     const input = workOrderInput.parse(req.body);
@@ -43,7 +57,7 @@ router.post('/work-orders', permit('workorders:manage_assigned'), async (req, re
     if (!acquisition) throw httpError(400, 'Work orders require purchased inventory');
     const workOrder = await WorkOrder.create({
       ...input, dealership: req.tenantId,
-      acquisition: input.acquisition || acquisition.id,
+      acquisition: acquisition.id,
       workOrderCode: id('WO'),
       status: input.assignedTo ? 'Assigned' : 'Open',
       history: [{ type: 'created', message: 'Work order created', actor: req.user.id }],
