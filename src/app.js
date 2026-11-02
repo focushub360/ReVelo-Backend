@@ -2,8 +2,8 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import rateLimit from 'express-rate-limit';
 import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import crypto from 'crypto';
@@ -32,6 +32,7 @@ import {
   AcquisitionOffer,
   Negotiation,
   Appointment,
+  DealerApplication,
 } from './models/index.js';
 import { ROLES, OPERATIONAL_PROFILES, PARTY_TYPES } from './config/permissions.js';
 import { authenticate, csrf, permit, tenantContext, tenantFilter } from './middleware/index.js';
@@ -49,8 +50,10 @@ import reportingRoutes from './routes/reportingRoutes.js';
 import lifecycleRoutes from './routes/lifecycleRoutes.js';
 import portalRoutes from './routes/portalRoutes.js';
 import profileRoutes from './routes/profileRoutes.js';
-const app = express();
+import publicRoutes from './routes/publicRoutes.js';
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 5 } });
+const app = express();
 app.use((req, res, next) => {
   if (req.url === '/api/v1' || req.url.startsWith('/api/v1/')) req.url = `/api${req.url.slice(7)}` || '/api';
   next();
@@ -66,6 +69,8 @@ app.use((req, res, next) => {
   next();
 });
 app.use('/api', healthRoutes);
+// These routes intentionally run before session middleware and return only public DTOs.
+app.use('/api', publicRoutes);
 app.post(
   '/api/auth/login',
   rateLimit({ windowMs: 15 * 60e3, max: 8, standardHeaders: true }),
@@ -216,6 +221,27 @@ app.patch('/api/dealers/:id/status', permit('dealers:update'), async (q, s, n) =
   } catch (e) { n(e); }
 });
 app.get('/api/activity', permit('audit:view'), async (q, s, n) => { try { s.json(await Audit.find(tenantFilter(q)).sort({ createdAt: -1 }).limit(100).lean()); } catch (e) { n(e); } });
+app.patch('/api/vehicles/:id/marketplace-listing', permit('sales'), async (q, s, n) => {
+  try {
+    const listing = z.object({
+      status: z.enum(['Draft', 'Published', 'Paused', 'Reserved', 'Sold', 'Withdrawn']),
+      price: z.coerce.number().min(0).optional(), title: z.string().max(160).optional(),
+      description: z.string().max(5000).optional(),
+      images: z.array(z.object({ url: z.string().url().max(500), alt: z.string().max(180).optional() })).max(20).optional(),
+      highlights: z.array(z.string().max(240)).max(12).optional(),
+    }).parse(q.body);
+    const vehicle = await Vehicle.findOne(tenantFilter(q, { _id: q.params.id }));
+    if (!vehicle) throw httpError(404, 'Vehicle not found');
+    if (listing.status === 'Published') {
+      if (vehicle.lifecycle !== 'Ready for Sale') throw httpError(409, 'Only ready-for-sale vehicles can be published');
+      if (listing.price == null && vehicle.publicListing?.price == null) throw httpError(400, 'A display price is required before publication');
+    }
+    vehicle.publicListing = { ...(vehicle.publicListing?.toObject?.() || vehicle.publicListing || {}), ...listing, updatedBy: q.user.id, ...(listing.status === 'Published' ? { publishedAt: vehicle.publicListing?.publishedAt || new Date() } : {}) };
+    await vehicle.save();
+    await audit(Audit, q.user.id, 'MARKETPLACE_LISTING_UPDATE', 'Vehicle', vehicle.id, { status: listing.status }, { dealership: q.tenantId, actorName: q.user.name, role: q.user.role, requestId: q.requestId });
+    s.json({ id: vehicle.id, publicListing: vehicle.publicListing });
+  } catch (e) { n(e); }
+});
 app.use('/api', inspectionRoutes);
 app.use('/api', parkingRoutes);
 app.use('/api', acquisitionRoutes);

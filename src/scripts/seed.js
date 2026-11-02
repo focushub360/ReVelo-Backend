@@ -69,6 +69,7 @@ await User.updateOne({ _id: sellerPortal.id }, { party: seller.id });
 await User.updateOne({ _id: buyerPortal.id }, { party: buyer.id });
 const vehicle = await upsert(Vehicle, { vehicleCode: 'APEX-DEMO-001' }, {
   dealership: apex.id, vehicleCode: 'APEX-DEMO-001', registration: 'DL01AB1234', vin: 'MA3EJKD1S00123456', make: 'Maruti Suzuki', model: 'Baleno', variant: 'Alpha Petrol', year: 2021, fuelType: 'Petrol', transmission: 'Automatic', odometer: 38400, lifecycle: 'Ready for Sale',
+  publicListing: { status: 'Published', price: 845000, title: '2021 Maruti Suzuki Baleno Alpha', description: 'A quality-checked pre-owned hatchback prepared through the ReVelo lifecycle.', images: [], highlights: ['Quality check completed', 'Automatic transmission'], publishedAt: stamp, updatedBy: apexAdmin.id },
   activities: [{ type: 'seed', message: 'Sample vehicle seeded into the Apex tenant', actor: apexAdmin.id, at: stamp }],
 });
 const coastVehicle = await upsert(Vehicle, { vehicleCode: 'COAST-DEMO-001' }, { dealership: coast.id, vehicleCode: 'COAST-DEMO-001', registration: 'KA01CD5678', make: 'Hyundai', model: 'i20', year: 2022, lifecycle: 'Enquiry Created' });
