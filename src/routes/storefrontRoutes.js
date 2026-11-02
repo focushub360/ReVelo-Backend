@@ -22,6 +22,18 @@ router.get('/public/vehicles', async (req, res, next) => {
         [field]: matcher,
       }));
     }
+    const yearMin = Number.parseInt(req.query.yearMin, 10);
+    const yearMax = Number.parseInt(req.query.yearMax, 10);
+    if (Number.isFinite(yearMin) || Number.isFinite(yearMax)) {
+      filter.year = {};
+      if (Number.isFinite(yearMin)) filter.year.$gte = yearMin;
+      if (Number.isFinite(yearMax)) filter.year.$lte = yearMax;
+    }
+    for (const field of ['fuelType', 'transmission']) {
+      if (typeof req.query[field] === 'string' && req.query[field].trim()) {
+        filter[field] = new RegExp(`^${escapeSearchTerm(req.query[field].trim())}$`, 'i');
+      }
+    }
 
     const activeDealerships = await Dealership.find({
       active: true,
@@ -64,6 +76,22 @@ router.get('/public/vehicles', async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+// This DTO deliberately exposes only sale-ready vehicle fields.  It must never
+// be replaced with a Vehicle document response: vehicles hold internal work,
+// acquisition and private document information.
+router.get('/public/vehicles/:vehicleId', async (req, res, next) => {
+  try {
+    const vehicle = await Vehicle.findOne({ _id: req.params.vehicleId, lifecycle: 'Ready for Sale' })
+      .select('make model variant year fuelType transmission odometer images dealership')
+      .populate({ path: 'dealership', match: { active: true, 'subscription.status': 'Active' }, select: 'name address.city address.state' })
+      .lean();
+    if (!vehicle?.dealership) return res.status(404).json({ error: { message: 'Vehicle listing not found' } });
+    const purchase = await Acquisition.findOne({ dealership: vehicle.dealership._id, vehicle: vehicle._id, status: 'Purchased' })
+      .select('expectedResale').lean();
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300').json(toPublicVehicle(vehicle, purchase?.expectedResale));
+  } catch (error) { next(error); }
 });
 
 router.get('/public/vehicles/:vehicleId/images/:imageId', async (req, res, next) => {

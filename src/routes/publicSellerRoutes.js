@@ -80,12 +80,19 @@ router.post(
           activities: [{ type: 'public-enquiry', message: 'Vehicle submitted through public seller form' }],
         });
       }
-      const seller = await Person.create({
-        dealership: dealership.id,
-        customerReference: id('SEL'),
-        name: textAnswer('name'), phone: textAnswer('phone'), email: textAnswer('email') || undefined,
-        kind: 'seller',
-      });
+      // A returning seller may submit more than one vehicle. Reuse their
+      // dealership-scoped external party instead of creating an identity per enquiry.
+      const sellerMatch = { dealership: dealership.id, kind: 'seller', phone: textAnswer('phone') };
+      if (textAnswer('email')) sellerMatch.email = textAnswer('email').toLowerCase();
+      let seller = await Person.findOne(sellerMatch);
+      if (!seller) {
+        seller = await Person.create({
+          dealership: dealership.id,
+          customerReference: id('SEL'),
+          name: textAnswer('name'), phone: textAnswer('phone'), email: textAnswer('email') || undefined,
+          kind: 'seller',
+        });
+      }
       const enquiry = await Enquiry.create({
         dealership: dealership.id,
         enquiryCode: id('ENQ'),
