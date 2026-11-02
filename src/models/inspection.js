@@ -9,7 +9,7 @@ const findingSchema = new Schema(
     required: { type: Boolean, default: false },
     result: {
       type: String,
-      enum: ['Pass', 'Advisory', 'Fail', 'Critical', 'Not Inspected'],
+      enum: ['Inspected', 'Not Inspected'],
       default: 'Not Inspected',
     },
     severity: { type: String, enum: ['Low', 'Medium', 'High', 'Critical'] },
@@ -26,7 +26,7 @@ export const Inspection = mongoose.model(
     {
       dealership: { type: Schema.Types.ObjectId, ref: 'Dealership', index: true },
       vehicle: { type: Schema.Types.ObjectId, ref: 'Vehicle', required: true, index: true },
-      kind: { type: String, enum: ['mechanical', 'structural', 'quality'], required: true },
+      kind: { type: String, enum: ['intake', 'mechanical', 'structural', 'quality'], required: true },
       template: { type: Schema.Types.ObjectId, ref: 'InspectionTemplate' },
       assignedTo: { type: Schema.Types.ObjectId, ref: 'User', required: true },
       assignedBy: { type: Schema.Types.ObjectId, ref: 'User' },
@@ -56,6 +56,7 @@ export const Inspection = mongoose.model(
         observations: String,
       },
       diagnostics: { source: { type: String, default: 'Manual entry' }, faultCodes: [String], notes: String },
+      recommendation: { type: String, enum: ['Suitable to Acquire', 'Manager Review Required', 'Not Suitable'], index: true },
       history: [activitySchema],
     },
     stamped

@@ -70,7 +70,7 @@ router.post(
       let vehicle = await Vehicle.findOne({ dealership: dealership.id, registration: normalizedRegistration });
       if (!vehicle) {
         vehicle = await Vehicle.create({
-          make: textAnswer('make'), model: textAnswer('model'),
+          make: textAnswer('make'), model: textAnswer('model'), fuelType: textAnswer('fuelType'), transmission: textAnswer('transmission'),
           year: answer('year') ? Number(answer('year')) : undefined,
           odometer: answer('odometer') ? Number(answer('odometer')) : undefined,
           registration: normalizedRegistration,
@@ -93,6 +93,7 @@ router.post(
         vehicle: vehicle.id,
         person: seller.id,
         source: 'Public sell-your-car form',
+        askingPrice: answer('expectedPrice') ? Number(answer('expectedPrice')) : undefined,
         declaredAccidentHistory: textAnswer('previousAccidents') || undefined,
         history: [{ type: 'public-submission', message: 'Seller submitted initial vehicle details', at: new Date() }],
         publicSubmission: {

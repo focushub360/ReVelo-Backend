@@ -26,6 +26,8 @@ import reportingRoutes from './routes/reportingRoutes.js';
 import lifecycleRoutes from './routes/lifecycleRoutes.js';
 import portalRoutes from './routes/portalRoutes.js';
 import profileRoutes from './routes/profileRoutes.js';
+import verificationRoutes from './routes/verificationRoutes.js';
+import intakeRoutes from './routes/intakeRoutes.js';
 
 const app = express();
 
@@ -46,6 +48,7 @@ app.use((req, res, next) => {
 
 app.use('/api', healthRoutes);
 app.use('/api', publicSellerRoutes);
+app.use('/api', verificationRoutes);
 app.use('/api', storefrontRoutes);
 app.use('/api', authRoutes);
 app.use('/api', (req, res, next) =>
@@ -79,6 +82,7 @@ app.use('/api', profileRoutes);
 app.use('/api', userRoutes);
 app.use('/api', vehicleRoutes);
 app.use('/api', enquiryRoutes);
+app.use('/api', intakeRoutes);
 app.use('/api', documentRoutes);
 app.use('/api', dashboardRoutes);
 

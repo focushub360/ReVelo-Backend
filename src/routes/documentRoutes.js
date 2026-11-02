@@ -1,13 +1,15 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import multer from 'multer';
 import { z } from 'zod';
-import { Vehicle, Document, DocumentRequirement, Audit } from '../models/index.js';
+import { Vehicle, Document, DocumentRequirement, Audit, Person, Enquiry, VerificationRequest } from '../models/index.js';
 import { permit } from '../middleware/permit.js';
 import { tenantFilter } from '../middleware/tenant.js';
-import { httpError } from '../utils/core.js';
+import { audit, httpError, token } from '../utils/core.js';
 import { paginatedQuery } from '../utils/pagination.js';
 import { storageProvider } from '../storage/privateStorage.js';
 import { hasSubmittedRequiredDocument } from '../services/lifecycleService.js';
+import { sendDocumentCorrectionRequest } from '../services/emailService.js';
 
 const router = Router();
 const page = paginatedQuery;
@@ -159,6 +161,30 @@ router.patch('/documents/:id/review', permit('documents:verify'), async (q, s, n
       throw httpError(400, 'A reason is required for this review outcome');
     const d = await Document.findOne(tenantFilter(q, { _id: q.params.id }));
     if (!d) throw httpError(404, 'Document not found');
+    if (body.status === 'Mismatch' && d.enquiry && d.person) {
+      const [seller, previousRequest] = await Promise.all([
+        Person.findById(d.person).select('name email'),
+        VerificationRequest.findOne({ dealership: d.dealership, enquiry: d.enquiry }).sort({ requestedAt: -1 }),
+      ]);
+      if (previousRequest && seller?.email) {
+        const raw = token();
+        const correctionRequest = await VerificationRequest.create({
+          dealership: d.dealership, enquiry: d.enquiry, person: d.person, vehicle: d.vehicle,
+          tokenHash: crypto.createHash('sha256').update(raw).digest('hex'),
+          expiresAt: new Date(Date.now() + 7 * 24 * 3600e3), requirements: previousRequest.requirements,
+          requestedBy: q.user.id,
+        });
+        try {
+          const delivery = await sendDocumentCorrectionRequest({ email: seller.email, name: seller.name, token: raw, category: d.category, reason: body.reason });
+          if (delivery.status !== 'sent') throw new Error('SMTP is not configured');
+        } catch (error) {
+          await correctionRequest.deleteOne();
+          throw httpError(502, 'The correction email could not be delivered. Check SMTP settings and try again.');
+        }
+        previousRequest.status = 'Closed'; await previousRequest.save();
+        await Enquiry.updateOne({ _id: d.enquiry }, { $set: { 'publicSubmission.proofStatus': 'Mismatch' }, $push: { history: { type: 'document-mismatch', message: `${d.category} needs correction: ${body.reason}`, actor: q.user.id, at: new Date() } } });
+      }
+    }
     d.status = body.status;
     d.reviewer = q.user.id;
     d.reviewedAt = new Date();

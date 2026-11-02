@@ -1,13 +1,26 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { Vehicle, Person, OwnershipPeriod, Enquiry, Audit } from '../models/index.js';
+import crypto from 'crypto';
+import { Vehicle, Person, OwnershipPeriod, Enquiry, Audit, DocumentRequirement, VerificationRequest, Document } from '../models/index.js';
 import { permit } from '../middleware/permit.js';
 import { tenantFilter } from '../middleware/tenant.js';
-import { id, audit, httpError } from '../utils/core.js';
+import { id, token, audit, httpError } from '../utils/core.js';
 import { paginatedQuery } from '../utils/pagination.js';
+import { sendVerificationRequest } from '../services/emailService.js';
 
 const router = Router();
 const page = paginatedQuery;
+const standardVerificationRequirements = [
+  { category: 'Seller photograph', description: 'A recent clear photograph of the seller submitting this vehicle.', required: true },
+  { category: 'Aadhaar card', description: 'Aadhaar card of the registered seller, uploaded only through this secure verification link.', required: true },
+  { category: 'RC book / vehicle registration proof', description: 'Clear photo or scan of the original RC book / smart card. The team will match registration, chassis, engine, owner, year, fuel type, and hypothecation details.', required: true },
+  { category: 'Insurance', description: 'Current insurance policy showing policy number, vehicle details, and expiry date.', requiresExpiry: true, required: true },
+  { category: 'PUC certificate', description: 'Current Pollution Under Control certificate, where applicable.', requiresExpiry: true, required: true },
+  { category: 'Loan closure / hypothecation release', description: 'Only if the vehicle has a loan or hypothecation: financier NOC, loan-closure letter, and Form 35 where available.', required: false },
+  { category: 'Service and vehicle history', description: 'Available service records, repair invoices, accident records, and supporting odometer history.', required: false },
+  { category: 'Road tax / challan clearance evidence', description: 'Only if available: road-tax receipt or challan-clearance evidence. The dealer will independently verify challans and vehicle status.', required: false },
+  { category: 'Inter-state RTO NOC', description: 'Only if the vehicle is registered in another state: RTO NOC or the applicable interstate-transfer documents.', required: false },
+];
 
 const enquiryInput = z.object({
   seller: z.object({
@@ -106,14 +119,53 @@ router.get('/enquiries/:id', permit('enquiries'), async (q, s, n) => {
   try {
     const enquiry = await Enquiry.findOne(tenantFilter(q, { _id: q.params.id })).populate('vehicle person assignedTo');
     if (!enquiry) throw httpError(404, 'Enquiry not found');
-    const [ownership, related] = await Promise.all([
+    const [ownership, related, verification, documents] = await Promise.all([
       OwnershipPeriod.find({ vehicle: enquiry.vehicle.id }).populate('owner'),
       Enquiry.find(tenantFilter(q, { vehicle: enquiry.vehicle.id })).populate('person assignedTo').sort({ createdAt: -1 }),
+      VerificationRequest.findOne({ dealership: enquiry.dealership, enquiry: enquiry.id }).sort({ requestedAt: -1 }).select('status requestedAt emailSentAt declaration'),
+      Document.find({ dealership: enquiry.dealership, enquiry: enquiry.id }).select('category originalName status submittedAt expiryDate reviewReason').sort({ createdAt: -1 }).lean(),
     ]);
-    s.json({ enquiry, ownership, related });
+    s.json({ enquiry, ownership, related, verification, documents });
   } catch (e) {
     n(e);
   }
+});
+router.post('/enquiries/:id/request-verification', permit('enquiries'), async (q, s, n) => {
+  try {
+    const body = z.object({ message: z.string().trim().max(1000).optional() }).parse(q.body);
+    const enquiry = await Enquiry.findOne(tenantFilter(q, { _id: q.params.id, type: 'seller' })).populate('person vehicle');
+    if (!enquiry) throw httpError(404, 'Seller enquiry not found');
+    if (!enquiry.person?.email) throw httpError(400, 'The customer did not provide an email address');
+    const requirements = await DocumentRequirement.find(tenantFilter(q, { enabled: true })).sort({ name: 1 }).lean();
+    // Every public seller receives the core legal checklist. Tenant-defined
+    // requirements are retained as additional dealership-specific requests.
+    const configuredRequirements = requirements.map((item) => ({
+      category: item.category,
+      description: item.description,
+      requiresExpiry: item.requiresExpiry,
+      required: item.requiredForAcquisition !== false,
+    }));
+    const standardCategories = new Set([
+      ...standardVerificationRequirements.map((item) => item.category.toLowerCase()),
+      'registration certificate',
+      'rc book',
+    ]);
+    const requestRequirements = [
+      ...standardVerificationRequirements,
+      ...configuredRequirements.filter((item) => !standardCategories.has(item.category.toLowerCase())),
+    ];
+    const raw = token();
+    await VerificationRequest.deleteMany({ enquiry: enquiry.id, status: 'Requested' });
+    const request = await VerificationRequest.create({ dealership: q.tenantId, enquiry: enquiry.id, person: enquiry.person.id, vehicle: enquiry.vehicle.id, tokenHash: crypto.createHash('sha256').update(raw).digest('hex'), expiresAt: new Date(Date.now() + 7 * 24 * 3600e3), requirements: requestRequirements, requestedBy: q.user.id });
+    let delivery;
+    try { delivery = await sendVerificationRequest({ email: enquiry.person.email, name: enquiry.person.name, dealershipName: q.user.dealership ? 'your ReVelo location' : 'ReVelo', token: raw, message: body.message }); }
+    catch (error) { await request.deleteOne(); throw httpError(502, 'The verification email could not be delivered. Check SMTP settings and try again.'); }
+    if (delivery.status !== 'sent') { await request.deleteOne(); throw httpError(503, 'SMTP email delivery is not configured'); }
+    request.emailSentAt = new Date(); await request.save();
+    enquiry.status = 'Contacted'; enquiry.publicSubmission.proofStatus = 'Requested'; enquiry.history.push({ type: 'proof-requested', message: 'Secure verification link emailed to customer', actor: q.user.id }); await enquiry.save();
+    await audit(Audit, q.user.id, 'REQUEST_VERIFICATION', 'Enquiry', enquiry.id, { request: request.id, recipient: enquiry.person.email }, { dealership: q.tenantId, actorName: q.user.name, role: q.user.role, requestId: q.requestId });
+    s.status(201).json({ expiresAt: request.expiresAt, delivery: 'sent' });
+  } catch (error) { n(error); }
 });
 router.patch('/enquiries/:id', permit('enquiries'), async (q, s, n) => {
   try {

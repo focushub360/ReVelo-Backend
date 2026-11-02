@@ -5,6 +5,7 @@ import { Enquiry } from '../models/enquiry.js';
 import { Person } from '../models/person.js';
 import { Acquisition } from '../models/acquisition.js';
 import { WorkOrder } from '../models/workOrder.js';
+import { QualityCheck } from '../models/qualityCheck.js';
 import { Sale } from '../models/sale.js';
 import { ParkingSlot } from '../models/parkingSlot.js';
 import { Movement } from '../models/movement.js';
@@ -35,6 +36,84 @@ async function inventoryRecord(vehicle, req) {
     currentLocation: vehicle.currentLocation,
   };
 }
+
+const workOrderCosts = (orders) => orders.reduce((total, order) => {
+  const other = (order.expenses || []).filter((expense) => expense.type === 'Other').reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+  // A technician estimate is the best available cost until actual expenses
+  // are recorded. Once actuals exist, they take precedence.
+  const labour = Number(order.actualLabour || order.estimatedLabour || 0);
+  const parts = Number(order.actualParts || order.estimatedParts || 0);
+  return { labour: total.labour + labour, parts: total.parts + parts, other: total.other + other };
+}, { labour: 0, parts: 0, other: 0 });
+
+// Manager pricing workspace. Only a purchased vehicle that has passed final
+// quality control can receive a public listing price.
+router.get('/pricing-candidates', permit('sales'), async (req, res, next) => {
+  try {
+    const acquisitions = await Acquisition.find(tenantFilter(req, { status: 'Purchased' }))
+      .populate('vehicle', 'registration vehicleCode make model year lifecycle currentLocation')
+      .sort({ updatedAt: -1 })
+      .lean();
+    const vehicleIds = acquisitions.map((item) => item.vehicle?._id || item.vehicle).filter(Boolean);
+    const [orders, qualityChecks] = await Promise.all([
+      WorkOrder.find(tenantFilter(req, { vehicle: { $in: vehicleIds } })).lean(),
+      QualityCheck.find(tenantFilter(req, { vehicle: { $in: vehicleIds } })).sort({ reviewedAt: -1, updatedAt: -1 }).lean(),
+    ]);
+    const byVehicle = (rows) => rows.reduce((map, row) => {
+      const key = String(row.vehicle);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(row);
+      return map;
+    }, new Map());
+    const ordersByVehicle = byVehicle(orders);
+    const qualityByVehicle = byVehicle(qualityChecks);
+    res.json(acquisitions.map((acquisition) => {
+      const vehicleId = String(acquisition.vehicle?._id || acquisition.vehicle);
+      const vehicleOrders = ordersByVehicle.get(vehicleId) || [];
+      const costs = workOrderCosts(vehicleOrders);
+      const qa = (qualityByVehicle.get(vehicleId) || [])[0];
+      const purchaseCost = Number(acquisition.agreedPrice || acquisition.proposedPrice || 0);
+      return {
+        acquisition,
+        vehicle: acquisition.vehicle,
+        qualityStatus: qa?.status || 'Not started',
+        refurbishment: { ...costs, total: costs.labour + costs.parts + costs.other },
+        totalInvestment: purchaseCost + costs.labour + costs.parts + costs.other + Number(acquisition.transactionCosts || 0) + Number(acquisition.holdingCosts || 0),
+        eligible: qa?.status === 'Pass' && vehicleOrders.length > 0 && vehicleOrders.every((order) => order.status === 'Completed'),
+      };
+    }));
+  } catch (error) { next(error); }
+});
+
+router.patch('/acquisitions/:id/pricing', permit('sales'), async (req, res, next) => {
+  try {
+    if (req.user.operationalProfile !== 'Dealership Manager')
+      throw httpError(403, 'Only the Dealership Manager can finalise a listing price');
+    const body = z.object({
+      targetMargin: money.optional(),
+      marketAdjustment: z.coerce.number().min(-10000000).max(10000000).optional(),
+      finalListingPrice: money.positive(),
+      minimumNegotiablePrice: money.positive(),
+    }).refine((value) => value.minimumNegotiablePrice <= value.finalListingPrice, {
+      message: 'Minimum negotiable price cannot exceed the final listing price',
+    }).parse(req.body);
+    const acquisition = await Acquisition.findOne(tenantFilter(req, { _id: req.params.id, status: 'Purchased' }));
+    if (!acquisition) throw httpError(404, 'Purchased vehicle not found');
+    const [orders, qa] = await Promise.all([
+      WorkOrder.find(tenantFilter(req, { vehicle: acquisition.vehicle })),
+      QualityCheck.findOne(tenantFilter(req, { vehicle: acquisition.vehicle, status: 'Pass' })).sort({ reviewedAt: -1 }),
+    ]);
+    if (!qa || !orders.length || orders.some((order) => order.status !== 'Completed'))
+      throw httpError(400, 'Complete refurbishment and pass final quality control before setting the final listing price');
+    acquisition.pricing = { ...body, finalisedAt: new Date(), finalisedBy: req.user.id };
+    // Storefront and existing inventory code read expectedResale. Keep it in
+    // sync as a compatibility value; this is now set only by final pricing.
+    acquisition.expectedResale = body.finalListingPrice;
+    acquisition.history.push({ type: 'final-pricing', message: `Final listing price set to ${body.finalListingPrice}`, actor: req.user.id });
+    await acquisition.save();
+    res.json(acquisition);
+  } catch (error) { next(error); }
+});
 router.get('/inventory', permit('sales'), async (req, res, next) => {
   try {
     const filter = tenantFilter(req, { lifecycle: 'Ready for Sale' });

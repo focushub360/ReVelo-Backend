@@ -24,3 +24,5 @@ export { Audit } from './audit.js';
 export { Negotiation } from './negotiation.js';
 export { Appointment } from './appointment.js';
 export { PublicLeadConfiguration } from './publicLeadConfiguration.js';
+export { VerificationRequest } from './verificationRequest.js';
+export { VehicleIntake } from './vehicleIntake.js';

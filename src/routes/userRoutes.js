@@ -47,10 +47,10 @@ router.post('/users', permit('users'), async (q, s, n) => {
     s.status(201).json({ id: u.id });
   } catch (e) {
     if (e?.code === 11000) {
-      next(httpError(409, 'An account with this email already exists'));
+      n(httpError(409, 'An account with this email already exists'));
       return;
     }
-    next(e);
+    n(e);
   }
 });
 router.patch('/users/:id', permit('users'), async (q, s, n) => {

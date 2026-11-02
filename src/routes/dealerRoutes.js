@@ -5,13 +5,52 @@ import { z } from 'zod';
 import {
   Dealership, User, Session, Person, Vehicle, Enquiry, Document, Inspection, ParkingSlot, ParkingZone,
   Movement, Acquisition, AcquisitionOffer, WorkOrder, QualityCheck, Sale, Notification, Negotiation,
-  Appointment, Audit,
+  Appointment, Audit, VehicleIntake,
 } from '../models/index.js';
 import { permit } from '../middleware/permit.js';
 import { audit, httpError, token } from '../utils/core.js';
 import { sendDealerInvitation } from '../services/emailService.js';
 
 const router = Router();
+
+router.get('/dealer-oversight', permit('acquisitions'), async (q, s, n) => {
+  try {
+    const scope = { dealership: q.tenantId };
+    const enquiries = await Enquiry.find({ ...scope, type: 'seller' }).populate('person vehicle').sort({ createdAt: -1 }).lean();
+    const vehicleIds = enquiries.map((enquiry) => enquiry.vehicle?._id || enquiry.vehicle).filter(Boolean);
+    const [intakes, reports, acquisitions, workOrders] = await Promise.all([
+      VehicleIntake.find({ ...scope, vehicle: { $in: vehicleIds } }).populate('advisor', 'name').populate('parkingSlot', 'code').sort({ createdAt: -1 }).lean(),
+      Inspection.find({ ...scope, vehicle: { $in: vehicleIds }, kind: 'mechanical' }).populate('assignedTo', 'name').sort({ submittedAt: -1, createdAt: -1 }).lean(),
+      Acquisition.find({ ...scope, vehicle: { $in: vehicleIds } }).sort({ updatedAt: -1 }).lean(),
+      WorkOrder.find({ ...scope, vehicle: { $in: vehicleIds } }).sort({ updatedAt: -1 }).lean(),
+    ]);
+    const latest = (rows) => new Map(rows.filter(Boolean).reduce((map, row) => map.has(String(row.vehicle)) ? map : map.set(String(row.vehicle), row), new Map()));
+    const intakeByVehicle = latest(intakes), reportByVehicle = latest(reports), acquisitionByVehicle = latest(acquisitions), workOrderByVehicle = latest(workOrders);
+    s.json(enquiries.map((enquiry) => ({
+      enquiry: { _id: enquiry._id, enquiryCode: enquiry.enquiryCode, status: enquiry.status, createdAt: enquiry.createdAt, person: enquiry.person, vehicle: enquiry.vehicle },
+      intake: intakeByVehicle.get(String(enquiry.vehicle?._id || enquiry.vehicle)) || null,
+      technicalReport: reportByVehicle.get(String(enquiry.vehicle?._id || enquiry.vehicle)) || null,
+      acquisition: acquisitionByVehicle.get(String(enquiry.vehicle?._id || enquiry.vehicle)) || null,
+      workOrder: workOrderByVehicle.get(String(enquiry.vehicle?._id || enquiry.vehicle)) || null,
+    })));
+  } catch (e) { n(e); }
+});
+
+router.get('/dealer-oversight/:id', permit('acquisitions'), async (q, s, n) => {
+  try {
+    const enquiry = await Enquiry.findOne({ _id: q.params.id, dealership: q.tenantId, type: 'seller' }).populate('person vehicle').lean();
+    if (!enquiry) throw httpError(404, 'Seller case not found');
+    const vehicleId = enquiry.vehicle?._id || enquiry.vehicle;
+    const [documents, intake, reports, acquisition, workOrders] = await Promise.all([
+      Document.find({ dealership: q.tenantId, vehicle: vehicleId }).sort({ submittedAt: -1 }).lean(),
+      VehicleIntake.findOne({ dealership: q.tenantId, vehicle: vehicleId }).populate('advisor', 'name').populate('parkingSlot', 'code type').sort({ createdAt: -1 }).lean(),
+      Inspection.find({ dealership: q.tenantId, vehicle: vehicleId, kind: { $in: ['mechanical', 'structural'] } }).populate('assignedTo', 'name').sort({ submittedAt: -1, createdAt: -1 }).lean(),
+      Acquisition.findOne({ dealership: q.tenantId, vehicle: vehicleId }).sort({ updatedAt: -1 }).lean(),
+      WorkOrder.find({ dealership: q.tenantId, vehicle: vehicleId }).sort({ updatedAt: -1 }).lean(),
+    ]);
+    s.json({ enquiry, documents, intake, reports, acquisition, workOrders });
+  } catch (e) { n(e); }
+});
 
 router.get('/dealers', permit('dealers:view'), async (q, s, n) => {
   try { s.json(await Dealership.find().sort({ createdAt: -1 }).lean()); } catch (e) { n(e); }

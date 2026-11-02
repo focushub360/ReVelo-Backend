@@ -10,7 +10,7 @@ const schema = new mongoose.Schema(
     number: Number,
     type: {
       type: String,
-      enum: ['parking', 'inspection', 'road-test', 'workshop', 'delivery'],
+      enum: ['parking', 'inspection', 'road-test', 'workshop', 'selling', 'delivery'],
       default: 'parking',
     },
     status: {

@@ -82,7 +82,7 @@ router.get('/reports/:name', permit('reports'), async (req, res, next) => {
       rows = await Inspection.aggregate([
         { $match: scoped },
         { $unwind: '$findings' },
-        { $match: { 'findings.result': { $in: ['Fail', 'Critical'] } } },
+        { $match: { 'findings.severity': { $in: ['High', 'Critical'] } } },
         { $group: { _id: '$findings.title', count: { $sum: 1 } } },
         { $sort: { count: -1 } },
       ]);

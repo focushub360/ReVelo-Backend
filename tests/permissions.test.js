@@ -22,10 +22,10 @@ test('a technician cannot self-elevate through an unknown profile', () =>
   ));
 test('buyer and seller portal has no internal finance access', () =>
   assert.equal(can({ role: 'Buyer & Seller', partyType: 'Buyer' }, 'finance:view'), false));
-test('inspection viewing does not grant assignment or review rights', () => {
+test('service advisor can assign intake inspection but cannot review it', () => {
   const advisor = { role: 'Technician & Service Advisor', operationalProfile: 'Service Advisor' };
   assert.equal(can(advisor, 'inspections:view_assigned'), true);
-  assert.equal(can(advisor, 'inspections:assign'), false);
+  assert.equal(can(advisor, 'inspections:assign'), true);
   assert.equal(can(advisor, 'inspections:review'), false);
 });
 test('parking actions retain distinct permissions', () => {
