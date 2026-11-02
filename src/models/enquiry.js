@@ -22,6 +22,23 @@ export const Enquiry = mongoose.model(
       followUp: Date,
       nextAction: String,
       notes: String,
+      publicSubmission: {
+        nearestLocation: { city: String, state: String },
+        address: { line1: String, locality: String, city: String, state: String, postalCode: String },
+        ownerCount: Number,
+        isFirstOwner: Boolean,
+        rcAvailable: Boolean,
+        insuranceRenewalDate: Date,
+        hasActiveLoan: Boolean,
+        loanProvider: String,
+        consentToContact: Boolean,
+        customFields: [{ fieldId: String, label: String, value: mongoose.Schema.Types.Mixed }],
+        proofStatus: {
+          type: String,
+          enum: ['Not Requested', 'Requested', 'Submitted', 'Verified', 'Mismatch', 'On Hold', 'Rejected'],
+          default: 'Not Requested',
+        },
+      },
       history: [activitySchema],
     },
     stamped

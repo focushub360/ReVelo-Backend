@@ -100,14 +100,14 @@ async function setSlotAssignment(req, slot, status, vehicleReference) {
   });
   return slot;
 }
-router.get('/parking/zones', permit('parking'), async (req, res, next) => {
+router.get('/parking/zones', permit('parking:view'), async (req, res, next) => {
   try {
     res.json(await ParkingZone.find(tenantFilter(req)).sort({ name: 1 }));
   } catch (error) {
     next(error);
   }
 });
-router.post('/parking/zones', permit('settings'), async (req, res, next) => {
+router.post('/parking/zones', permit('settings:manage'), async (req, res, next) => {
   try {
     res.status(201).json(
       await ParkingZone.create({ dealership: req.tenantId, ...z
@@ -122,10 +122,10 @@ router.post('/parking/zones', permit('settings'), async (req, res, next) => {
     next(error);
   }
 });
-router.patch('/parking/zones/:id', permit('settings'), async (req, res, next) => {
+router.patch('/parking/zones/:id', permit('settings:manage'), async (req, res, next) => {
   try {
-    const zone = await ParkingZone.findByIdAndUpdate(
-      { _id: req.params.id, ...tenantFilter(req) },
+    const zone = await ParkingZone.findOneAndUpdate(
+      tenantFilter(req, { _id: req.params.id }),
       z
         .object({
           name: z.string().min(2).optional(),
@@ -141,8 +141,8 @@ router.patch('/parking/zones/:id', permit('settings'), async (req, res, next) =>
     next(error);
   }
 });
-router.get('/parking/slots', permit('parking'), paginatedQuery(ParkingSlot));
-router.post('/parking/slots', permit('parking'), async (req, res, next) => {
+router.get('/parking/slots', permit('parking:view'), paginatedQuery(ParkingSlot));
+router.post('/parking/slots', permit('parking:configure'), async (req, res, next) => {
   try {
     const input = slotInput.parse(req.body);
     const { vehicle, status = 'Available', ...slotData } = input;
@@ -171,7 +171,7 @@ router.post('/parking/slots', permit('parking'), async (req, res, next) => {
     handleSlotError(error, next);
   }
 });
-router.patch('/parking/slots/:id', permit('parking'), async (req, res, next) => {
+router.patch('/parking/slots/:id', permit('parking:configure'), async (req, res, next) => {
   try {
     const slot = await ParkingSlot.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!slot) throw httpError(404, 'Parking slot not found');
@@ -225,7 +225,7 @@ router.patch('/parking/slots/:id', permit('parking'), async (req, res, next) => 
     handleSlotError(error, next);
   }
 });
-router.delete('/parking/slots/:id', permit('parking'), async (req, res, next) => {
+router.delete('/parking/slots/:id', permit('parking:configure'), async (req, res, next) => {
   try {
     const slot = await ParkingSlot.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!slot) throw httpError(404, 'Parking slot not found');
@@ -237,7 +237,7 @@ router.delete('/parking/slots/:id', permit('parking'), async (req, res, next) =>
     next(error);
   }
 });
-router.get('/parking/vehicles/:vehicleId/history', permit('parking'), async (req, res, next) => {
+router.get('/parking/vehicles/:vehicleId/history', permit('parking:view'), async (req, res, next) => {
   try {
     res.json(
       await Movement.find(tenantFilter(req, { vehicle: req.params.vehicleId })).populate('from to by').sort({ createdAt: -1 })
@@ -246,7 +246,7 @@ router.get('/parking/vehicles/:vehicleId/history', permit('parking'), async (req
     next(error);
   }
 });
-router.post('/parking/reserve', permit('parking'), async (req, res, next) => {
+router.post('/parking/reserve', permit('parking:reserve'), async (req, res, next) => {
   try {
     const { vehicle, slot, reason, reservedUntil } = z
       .object({
@@ -282,7 +282,7 @@ router.post('/parking/reserve', permit('parking'), async (req, res, next) => {
     next(error);
   }
 });
-router.post('/parking/confirm', permit('parking'), async (req, res, next) => {
+router.post('/parking/confirm', permit('parking:move'), async (req, res, next) => {
   try {
     const { vehicle, slot, reason } = z
       .object({ vehicle: z.string(), slot: z.string(), reason: z.string().max(1000).optional() })
@@ -322,7 +322,7 @@ router.post('/parking/confirm', permit('parking'), async (req, res, next) => {
     next(error);
   }
 });
-router.post('/parking/release', permit('parking'), async (req, res, next) => {
+router.post('/parking/release', permit('parking:release'), async (req, res, next) => {
   try {
     const { vehicle, reason } = z
       .object({ vehicle: z.string(), reason: z.string().min(1).max(1000) })
@@ -349,7 +349,7 @@ router.post('/parking/release', permit('parking'), async (req, res, next) => {
     next(error);
   }
 });
-router.post('/parking/relocate', permit('parking'), async (req, res, next) => {
+router.post('/parking/relocate', permit('parking:move'), async (req, res, next) => {
   try {
     const { vehicle, to, reason } = z
       .object({ vehicle: z.string(), to: z.string(), reason: z.string().min(1).max(1000) })
@@ -374,7 +374,7 @@ router.post('/parking/relocate', permit('parking'), async (req, res, next) => {
       });
       throw httpError(409, 'Source slot changed before relocation completed');
     }
-    await Vehicle.findByIdAndUpdate(vehicle, { $set: { currentLocation: target.id } });
+    await Vehicle.findOneAndUpdate(tenantFilter(req, { _id: vehicle }), { $set: { currentLocation: target.id } });
     await Movement.create({
       dealership: req.tenantId, vehicle,
       from: source.id,

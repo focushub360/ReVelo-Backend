@@ -24,9 +24,21 @@ export function detectDocument(buffer) {
   if (!found) throw httpError(400, 'Only genuine PDF, JPEG, and PNG files are allowed');
   return found;
 }
+export function detectImage(buffer) {
+  const found = [signatures.jpeg, signatures.png].find((x) => x.valid(buffer));
+  if (!found) throw httpError(400, 'Only genuine JPEG and PNG images are allowed');
+  return found;
+}
 export async function savePrivateDocument(buffer) {
   const detected = detectDocument(buffer),
     key = `${id('DOC')}${detected.extension}`;
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(path.join(root, key), buffer, { flag: 'wx' });
+  return { storageKey: key, mimeType: detected.mime, extension: detected.extension };
+}
+export async function savePrivateImage(buffer) {
+  const detected = detectImage(buffer);
+  const key = `${id('IMG')}${detected.extension}`;
   await fs.mkdir(root, { recursive: true });
   await fs.writeFile(path.join(root, key), buffer, { flag: 'wx' });
   return { storageKey: key, mimeType: detected.mime, extension: detected.extension };

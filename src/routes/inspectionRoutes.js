@@ -3,6 +3,11 @@ import { z } from 'zod';
 import { Inspection } from '../models/inspection.js';
 import { InspectionTemplate } from '../models/inspectionTemplate.js';
 import { Vehicle } from '../models/vehicle.js';
+import { User } from '../models/user.js';
+import { Notification } from '../models/notification.js';
+import { VehicleIntake } from '../models/vehicleIntake.js';
+import { Acquisition } from '../models/acquisition.js';
+import { Enquiry } from '../models/enquiry.js';
 import { permit } from '../middleware/permit.js';
 import { httpError } from '../utils/core.js';
 import { paginatedQuery } from '../utils/pagination.js';
@@ -15,7 +20,7 @@ const findings = z.array(
     category: z.string().optional(),
     title: z.string().min(1),
     required: z.boolean().optional(),
-    result: z.enum(['Pass', 'Advisory', 'Fail', 'Critical', 'Not Inspected']),
+    result: z.enum(['Inspected', 'Not Inspected']),
     severity: z.enum(['Low', 'Medium', 'High', 'Critical']).optional(),
     notes: z.string().optional(),
     photos: z.array(z.string()).optional(),
@@ -23,7 +28,7 @@ const findings = z.array(
     estimatedRepairCost: z.coerce.number().min(0).optional(),
   })
 );
-router.get('/inspection-templates', permit('inspections'), async (req, res, next) => {
+router.get('/inspection-templates', permit('inspections:view_assigned'), async (req, res, next) => {
   try {
     res.json(await InspectionTemplate.find(tenantFilter(req, { enabled: true })).sort({ kind: 1, name: 1 }));
   } catch (error) {
@@ -54,14 +59,32 @@ router.post('/inspection-templates', permit('settings'), async (req, res, next) 
     next(error);
   }
 });
-router.get('/inspections', permit('inspections'), paginatedQuery(Inspection));
-router.post('/inspections', permit('inspections'), async (req, res, next) => {
+router.get('/inspections', permit('inspections:view_assigned'), paginatedQuery(Inspection, (req) =>
+  req.user.role === 'Dealer Admin' ? {} : { assignedTo: req.user.id }
+));
+router.get('/technical-inspections', permit('inspections:view_assigned'), async (req, res, next) => {
+  try {
+    const scope = req.user.role === 'Dealer Admin' ? {} : { assignedTo: req.user.id };
+    const inspections = await Inspection.find(tenantFilter(req, { ...scope, kind: 'mechanical' }))
+      .populate('vehicle', 'registration make model year odometer currentLocation')
+      .populate('assignedBy', 'name')
+      .sort({ assignedAt: 1 })
+      .lean();
+    const intakes = await VehicleIntake.find(tenantFilter(req, { vehicle: { $in: inspections.map((report) => report.vehicle?._id || report.vehicle) } }))
+      .populate('parkingSlot', 'code type')
+      .sort({ createdAt: -1 }).lean();
+    const byVehicle = new Map();
+    for (const intake of intakes) if (!byVehicle.has(String(intake.vehicle))) byVehicle.set(String(intake.vehicle), intake);
+    res.json(inspections.map((report) => ({ report, intake: byVehicle.get(String(report.vehicle?._id || report.vehicle)) || null })));
+  } catch (error) { next(error); }
+});
+router.post('/inspections', permit('inspections:assign'), async (req, res, next) => {
   try {
     const input = z
       .object({
         vehicle: z.string(),
-        kind: z.enum(['mechanical', 'structural']),
-        assignedTo: z.string(),
+        kind: z.enum(['intake', 'mechanical', 'structural']).default('intake'),
+        assignedTo: z.string().optional(),
         template: z.string().optional(),
         dueDate: z.coerce.date().optional(),
         roadTest: z
@@ -75,6 +98,10 @@ router.post('/inspections', permit('inspections'), async (req, res, next) => {
       .parse(req.body);
     const vehicle = await Vehicle.findOne(tenantFilter(req, { _id: input.vehicle }));
     if (!vehicle) throw httpError(404, 'Vehicle not found');
+    const assignedTechnician = input.kind === 'intake' ? req.user : input.assignedTo
+      ? await User.findOne(tenantFilter(req, { _id: input.assignedTo, active: true, operationalProfile: 'Senior Technician / Vehicle Inspector' }))
+      : await User.findOne(tenantFilter(req, { active: true, operationalProfile: 'Senior Technician / Vehicle Inspector' })).sort({ createdAt: 1 });
+    if (!assignedTechnician) throw httpError(400, 'Add an active Senior Technician before assigning a technical inspection');
     let template;
     let reportFindings = [];
     if (input.template) {
@@ -88,7 +115,7 @@ router.post('/inspections', permit('inspections'), async (req, res, next) => {
       }));
     }
     const inspection = await Inspection.create({
-      ...input, dealership: req.tenantId,
+      ...input, assignedTo: assignedTechnician.id, dealership: req.tenantId,
       assignedBy: req.user.id,
       roadTest: { ...input.roadTest, authorisedBy: input.roadTest?.authorised ? req.user.id : undefined },
       findings: reportFindings,
@@ -99,12 +126,28 @@ router.post('/inspections', permit('inspections'), async (req, res, next) => {
     next(error);
   }
 });
-router.get('/inspections/:id', permit('inspections'), async (req, res, next) => {
+router.post('/inspections/:id/handoff-to-technician', permit('inspections:assign'), async (req, res, next) => {
+  try {
+    const intake = await Inspection.findOne(tenantFilter(req, { _id: req.params.id, kind: 'intake' }));
+    if (!intake) throw httpError(404, 'Physical intake report not found');
+    if (!ownOrDealer(req, intake.assignedTo)) throw httpError(403, 'Only the assigned Service Advisor can hand off this intake');
+    if (intake.status !== 'Submitted') throw httpError(409, 'Complete and submit the physical intake before handing it to a Senior Technician');
+    const existing = await Inspection.findOne(tenantFilter(req, { parentReport: intake.id, kind: 'mechanical' }));
+    if (existing) return res.json(existing);
+    const technician = await User.findOne(tenantFilter(req, { active: true, operationalProfile: 'Senior Technician / Vehicle Inspector' })).sort({ createdAt: 1 });
+    if (!technician) throw httpError(400, 'Add an active Senior Technician before handoff');
+    const technicalInspection = await Inspection.create({ dealership: req.tenantId, vehicle: intake.vehicle, kind: 'mechanical', assignedTo: technician.id, assignedBy: req.user.id, parentReport: intake.id, status: 'Assigned', history: [{ type: 'handoff', message: 'Physical intake submitted and handed to Senior Technician', actor: req.user.id }] });
+    await Notification.create({ dealership: req.tenantId, recipient: technician.id, event: 'technical-inspection-assigned', title: 'Vehicle ready for technical inspection', body: 'Service Advisor completed physical intake. Perform engine, mechanical, structural, and road-test checks.', entityType: 'Inspection', entityId: String(technicalInspection.id) });
+    res.status(201).json(technicalInspection);
+  } catch (error) { next(error); }
+});
+router.get('/inspections/:id', permit('inspections:view_assigned'), async (req, res, next) => {
   try {
     const report = await Inspection.findOne(tenantFilter(req, { _id: req.params.id })).populate(
       'vehicle assignedTo assignedBy reviewer template parentReport'
     );
     if (!report) throw httpError(404, 'Inspection not found');
+    if (!ownOrDealer(req, report.assignedTo)) throw httpError(403, 'Only the assigned employee may view this report');
     const revisions = await Inspection.find(tenantFilter(req, {
       $or: [{ _id: report.id }, { parentReport: report.parentReport || report.id }],
     }))
@@ -115,7 +158,7 @@ router.get('/inspections/:id', permit('inspections'), async (req, res, next) => 
     next(error);
   }
 });
-router.patch('/inspections/:id', permit('inspections'), async (req, res, next) => {
+router.patch('/inspections/:id', permit('inspections:manage_assigned'), async (req, res, next) => {
   try {
     const input = z
       .object({
@@ -136,6 +179,7 @@ router.patch('/inspections/:id', permit('inspections'), async (req, res, next) =
             notes: z.string().optional(),
           })
           .optional(),
+        recommendation: z.enum(['Suitable to Acquire', 'Manager Review Required', 'Not Suitable']).optional(),
         status: z.enum(['In Progress']).optional(),
       })
       .parse(req.body);
@@ -153,7 +197,7 @@ router.patch('/inspections/:id', permit('inspections'), async (req, res, next) =
     next(error);
   }
 });
-router.post('/inspections/:id/submit', permit('inspections'), async (req, res, next) => {
+router.post('/inspections/:id/submit', permit('inspections:manage_assigned'), async (req, res, next) => {
   try {
     const report = await Inspection.findOne(tenantFilter(req, { _id: req.params.id }));
     if (!report) throw httpError(404, 'Inspection not found');
@@ -170,12 +214,29 @@ router.post('/inspections/:id/submit', permit('inspections'), async (req, res, n
       actor: req.user.id,
     });
     await report.save();
+    if (report.kind === 'mechanical') {
+      let acquisition = await Acquisition.findOne(tenantFilter(req, { vehicle: report.vehicle }));
+      if (!acquisition) {
+        const enquiry = await Enquiry.findOne(tenantFilter(req, { vehicle: report.vehicle, type: 'seller' })).sort({ createdAt: -1 });
+        acquisition = await Acquisition.create({
+          dealership: req.tenantId,
+          vehicle: report.vehicle,
+          enquiry: enquiry?.id,
+          proposedPrice: 0,
+          expectedResale: 0,
+          status: 'Valuation Requested',
+          history: [{ type: 'technical-report-received', message: 'Senior Technician report submitted; Manager valuation required', actor: req.user.id }],
+        });
+      }
+      const manager = await User.findOne(tenantFilter(req, { active: true, operationalProfile: 'Dealership Manager' })).sort({ createdAt: 1 });
+      if (manager) await Notification.create({ dealership: req.tenantId, recipient: manager.id, event: 'technical-inspection-submitted', title: 'Seller vehicle ready for purchase decision', body: `Technical report submitted: ${report.recommendation || 'Manager Review Required'}. A manager acquisition case has been created.`, entityType: 'Acquisition', entityId: String(acquisition.id) });
+    }
     res.json(report);
   } catch (error) {
     next(error);
   }
 });
-router.post('/inspections/:id/review', permit('inspections'), async (req, res, next) => {
+router.post('/inspections/:id/review', permit('inspections:review'), async (req, res, next) => {
   try {
     const { approved, note } = z
       .object({ approved: z.boolean(), note: z.string().max(2000).optional() })
@@ -198,7 +259,7 @@ router.post('/inspections/:id/review', permit('inspections'), async (req, res, n
     next(error);
   }
 });
-router.post('/inspections/:id/revision', permit('inspections'), async (req, res, next) => {
+router.post('/inspections/:id/revision', permit('inspections:assign'), async (req, res, next) => {
   try {
     const { reason } = z.object({ reason: z.string().min(3).max(2000) }).parse(req.body);
     const previous = await Inspection.findOne(tenantFilter(req, { _id: req.params.id }));

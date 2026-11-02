@@ -1,13 +1,14 @@
 // Exactly four primary roles are persisted. Operational responsibilities are profiles, not roles.
 export const ROLES = ['Super Admin', 'Dealer Admin', 'Technician & Service Advisor', 'Buyer & Seller'];
-export const OPERATIONAL_PROFILES = ['Service Advisor', 'Senior Technician / Vehicle Inspector', 'Parking Manager', 'Refurbishment Technician'];
+export const OPERATIONAL_PROFILES = ['Service Advisor', 'Senior Technician / Vehicle Inspector', 'Dealership Manager', 'Parking Manager', 'Refurbishment Technician'];
 export const PARTY_TYPES = ['Buyer', 'Seller', 'Buyer and Seller'];
 const dealer = ['enquiries:view', 'enquiries:manage', 'vehicles:view', 'vehicles:manage', 'documents:view', 'documents:upload', 'documents:verify', 'inspections:view_assigned', 'inspections:manage_assigned', 'inspections:assign', 'inspections:review', 'parking:view', 'parking:configure', 'parking:reserve', 'parking:move', 'parking:release', 'acquisitions:view', 'acquisitions:approve', 'workorders:view_assigned', 'workorders:manage_assigned', 'qa:review', 'sales:manage', 'finance:view', 'finance:manage', 'reports:view', 'users:create', 'users:view', 'users:update', 'audit:view', 'settings:manage'];
 const profiles = {
-  'Service Advisor': ['vehicles:view', 'documents:view', 'inspections:view_assigned', 'inspections:manage_assigned'],
-  'Senior Technician / Vehicle Inspector': ['vehicles:view', 'inspections:view_assigned', 'inspections:manage_assigned'],
+  'Service Advisor': ['enquiries:view', 'enquiries:manage', 'vehicles:view', 'documents:view', 'documents:verify', 'inspections:view_assigned', 'inspections:assign', 'parking:view', 'parking:reserve', 'parking:move'],
+  'Senior Technician / Vehicle Inspector': ['vehicles:view', 'inspections:view_assigned', 'inspections:manage_assigned', 'workorders:view_assigned', 'workorders:manage_assigned'],
+  'Dealership Manager': ['vehicles:view', 'documents:view', 'inspections:view_assigned', 'inspections:review', 'acquisitions:view', 'sales:manage', 'workorders:view_assigned', 'workorders:manage_assigned', 'qa:review', 'users:view', 'parking:view', 'parking:move'],
   'Parking Manager': ['vehicles:view', 'parking:view', 'parking:configure', 'parking:reserve', 'parking:move', 'parking:release'],
-  'Refurbishment Technician': ['vehicles:view', 'workorders:view_assigned', 'workorders:manage_assigned'],
+  'Refurbishment Technician': ['vehicles:view', 'workorders:view_assigned', 'workorders:manage_assigned', 'audit:view'],
 };
 export function permissionsFor(user) {
   if (user?.role === 'Super Admin') return ['*'];

@@ -96,7 +96,7 @@ router.get('/notifications', async (req, res, next) => {
 router.patch('/notifications/:id/read', async (req, res, next) => {
   try {
     const notification = await Notification.findOneAndUpdate(
-      { _id: req.params.id, recipient: req.user.id },
+      tenantFilter(req, { _id: req.params.id, recipient: req.user.id }),
       { read: true, readAt: new Date() },
       { new: true }
     );
@@ -110,16 +110,16 @@ router.post('/notifications/refresh', async (req, res, next) => {
   try {
     const now = new Date();
     const [inspections, workOrders, followUps] = await Promise.all([
-      Inspection.find({ assignedTo: req.user.id, status: { $in: ['Assigned', 'In Progress'] } }),
-      WorkOrder.find({
+      Inspection.find(tenantFilter(req, { assignedTo: req.user.id, status: { $in: ['Assigned', 'In Progress'] } })),
+      WorkOrder.find(tenantFilter(req, {
         assignedTo: req.user.id,
         status: { $in: ['Assigned', 'In Progress', 'Waiting for Parts', 'Rework Required'] },
-      }),
-      Enquiry.find({
+      })),
+      Enquiry.find(tenantFilter(req, {
         assignedTo: req.user.id,
         followUp: { $lte: now },
         status: { $in: ['Open', 'Contacted', 'On Hold'] },
-      }),
+      })),
     ]);
     const candidates = [
       ...inspections
@@ -153,20 +153,21 @@ router.post('/notifications/refresh', async (req, res, next) => {
       })),
     ];
     for (const item of candidates) {
-      const exists = await Notification.exists({
+      const exists = await Notification.exists(tenantFilter(req, {
         recipient: req.user.id,
         event: item.event,
         entityId: item.entityId,
         read: false,
-      });
+      }));
       if (!exists)
         await Notification.create({
           ...item,
+          dealership: req.tenantId,
           recipient: req.user.id,
           link: `/${item.entityType.toLowerCase()}s/${item.entityId}`,
         });
     }
-    res.json(await Notification.find({ recipient: req.user.id, read: false }).sort({ createdAt: -1 }));
+    res.json(await Notification.find(tenantFilter(req, { recipient: req.user.id, read: false })).sort({ createdAt: -1 }));
   } catch (error) {
     next(error);
   }

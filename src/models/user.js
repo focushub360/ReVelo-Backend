@@ -9,7 +9,7 @@ export const User = mongoose.model(
       passwordHash: { type: String, required: true },
       role: { type: String, required: true, enum: ['Super Admin', 'Dealer Admin', 'Technician & Service Advisor', 'Buyer & Seller'] },
       dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
-      operationalProfile: { type: String, enum: ['Service Advisor', 'Senior Technician / Vehicle Inspector', 'Parking Manager', 'Refurbishment Technician'] },
+      operationalProfile: { type: String, enum: ['Service Advisor', 'Senior Technician / Vehicle Inspector', 'Dealership Manager', 'Parking Manager', 'Refurbishment Technician'] },
       partyType: { type: String, enum: ['Buyer', 'Seller', 'Buyer and Seller'] },
       party: { type: mongoose.Schema.Types.ObjectId, ref: 'Person', index: true },
       phone: String, photoUrl: String, inviteTokenHash: String, inviteExpiresAt: Date,

@@ -31,6 +31,15 @@ export const Vehicle = mongoose.model(
         updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       },
       currentLocation: { type: mongoose.Schema.Types.ObjectId, ref: 'ParkingSlot' },
+      images: [
+        {
+          storageKey: { type: String, required: true },
+          originalName: { type: String, required: true },
+          mimeType: { type: String, required: true },
+          size: { type: Number, required: true },
+          uploadedAt: { type: Date, default: Date.now },
+        },
+      ],
       activities: [activitySchema],
     },
     stamped

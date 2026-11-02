@@ -7,7 +7,30 @@ test('parking operational profile is restricted to yard responsibilities', () =>
   assert.equal(can(parkingManager, 'finance'), false);
 });
 test('super admin retains platform access', () => assert.equal(can('Super Admin', 'dealers:create'), true));
+test('only administrators can manage vehicle records and images', () => {
+  assert.equal(can('Dealer Admin', 'vehicles:manage'), true);
+  assert.equal(can('Super Admin', 'vehicles:manage'), true);
+  assert.equal(
+    can({ role: 'Technician & Service Advisor', operationalProfile: 'Service Advisor' }, 'vehicles:manage'),
+    false
+  );
+});
 test('a technician cannot self-elevate through an unknown profile', () =>
-  assert.equal(can({ role: 'Technician & Service Advisor', operationalProfile: 'Not valid' }, 'users:update'), false));
+  assert.equal(
+    can({ role: 'Technician & Service Advisor', operationalProfile: 'Not valid' }, 'users:update'),
+    false
+  ));
 test('buyer and seller portal has no internal finance access', () =>
   assert.equal(can({ role: 'Buyer & Seller', partyType: 'Buyer' }, 'finance:view'), false));
+test('service advisor can assign intake inspection but cannot review it', () => {
+  const advisor = { role: 'Technician & Service Advisor', operationalProfile: 'Service Advisor' };
+  assert.equal(can(advisor, 'inspections:view_assigned'), true);
+  assert.equal(can(advisor, 'inspections:assign'), true);
+  assert.equal(can(advisor, 'inspections:review'), false);
+});
+test('parking actions retain distinct permissions', () => {
+  const manager = { role: 'Technician & Service Advisor', operationalProfile: 'Parking Manager' };
+  assert.equal(can(manager, 'parking:move'), true);
+  assert.equal(can(manager, 'parking:release'), true);
+  assert.equal(can(manager, 'parking:configure'), true);
+});
