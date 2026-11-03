@@ -10,6 +10,7 @@ import {
   ParkingZone, ParkingSlot, Movement, Inspection, Acquisition, WorkOrder,
   QualityCheck, Sale, Notification, Audit, Session, PasswordReset, OwnershipPeriod,
   AcquisitionOffer, InspectionTemplate, Negotiation, Appointment,
+  DealerApplication,
 } from '../models/index.js';
 
 dotenv.config();
@@ -23,7 +24,7 @@ const collections = [
   Session, PasswordReset, Notification, Audit, Appointment, Negotiation, Sale, QualityCheck, WorkOrder,
   AcquisitionOffer, Acquisition, Inspection, InspectionTemplate, Movement, ParkingSlot,
   ParkingZone, Document, DocumentRequirement, OwnershipPeriod, Enquiry, Vehicle, Person,
-  User, Dealership,
+  User, Dealership, DealerApplication,
 ];
 for (const Model of collections) await Model.deleteMany({});
 await DocumentRequirement.collection.dropIndex('category_1').catch(() => {});
@@ -72,7 +73,7 @@ const buyer = await upsert(Person, { dealership: apex.id, email: buyerPortal.ema
 await User.updateOne({ _id: sellerPortal.id }, { party: seller.id });
 await User.updateOne({ _id: buyerPortal.id }, { party: buyer.id });
 const vehicle = await upsert(Vehicle, { vehicleCode: 'APEX-DEMO-001' }, {
-  dealership: apex.id, vehicleCode: 'APEX-DEMO-001', registration: 'DL01AB1234', vin: 'MA3EJKD1S00123456', make: 'Maruti Suzuki', model: 'Baleno', variant: 'Alpha Petrol', year: 2021, fuelType: 'Petrol', transmission: 'Automatic', odometer: 38400, lifecycle: 'Ready for Sale',
+  dealership: apex.id, vehicleCode: 'APEX-DEMO-001', registration: 'DL01AB1234', vin: 'MA3EJKD1S00123456', make: 'Maruti Suzuki', model: 'Baleno', variant: 'Alpha Petrol', year: 2021, fuelType: 'Petrol', transmission: 'Automatic', odometer: 38400, lifecycle: 'Ready for Sale', publicListing: { status: 'Published', price: 845000, summary: 'A carefully prepared automatic hatchback, ready for its next owner.', publishedAt: stamp },
   activities: [{ type: 'seed', message: 'Sample vehicle seeded into the Apex tenant', actor: apexAdmin.id, at: stamp }],
 });
 const coastVehicle = await upsert(Vehicle, { vehicleCode: 'COAST-DEMO-001' }, { dealership: coast.id, vehicleCode: 'COAST-DEMO-001', registration: 'KA01CD5678', make: 'Hyundai', model: 'i20', year: 2022, lifecycle: 'Enquiry Created' });
