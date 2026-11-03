@@ -50,6 +50,7 @@ import reportingRoutes from './routes/reportingRoutes.js';
 import lifecycleRoutes from './routes/lifecycleRoutes.js';
 import portalRoutes from './routes/portalRoutes.js';
 import profileRoutes from './routes/profileRoutes.js';
+import publicRoutes from './routes/publicRoutes.js';
 import { sendDealerInvitation } from './services/emailService.js';
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 5 } });
@@ -68,6 +69,9 @@ app.use((req, res, next) => {
   next();
 });
 app.use('/api', healthRoutes);
+// Deliberately mounted before session protection: these endpoints expose only curated marketplace DTOs
+// and public lead forms, never dealer operational data.
+app.use('/api/public', publicRoutes);
 const publicLeadConfig = () => PublicLeadConfiguration.findOne({ key: 'seller-form' });
 const DEFAULT_PUBLIC_FIELDS = [
   ['name', 'Full name', 'text', true, true], ['phone', 'Mobile number', 'tel', true, true], ['email', 'Email address', 'email'],
@@ -277,6 +281,23 @@ app.use('/api', (req, res, next) => {
     req.path === '/activity' || req.path === '/public-lead-settings';
   if (req.user.role === 'Super Admin' && platformRoute) return next();
   return requireTenant(req, res, next);
+});
+app.patch('/api/vehicles/:id/public-listing', permit('sales'), async (req, res, next) => {
+  try {
+    const input = z.object({
+      status: z.enum(['Draft', 'Published', 'Paused', 'Reserved', 'Sold', 'Withdrawn']),
+      price: z.coerce.number().positive().optional(),
+      summary: z.string().trim().max(1200).optional(),
+    }).parse(req.body);
+    const vehicle = await Vehicle.findOne(tenantFilter(req, { _id: req.params.id }));
+    if (!vehicle) throw httpError(404, 'Vehicle not found');
+    if (input.status === 'Published' && vehicle.lifecycle !== 'Ready for Sale') throw httpError(400, 'Only ready-for-sale vehicles can be published');
+    if (input.status === 'Published' && !input.price && !vehicle.publicListing?.price) throw httpError(400, 'A public listing price is required');
+    vehicle.publicListing = { ...(vehicle.publicListing?.toObject?.() || vehicle.publicListing || {}), ...input, publishedAt: input.status === 'Published' ? new Date() : vehicle.publicListing?.publishedAt };
+    await vehicle.save();
+    await audit(Audit, req.user.id, 'PUBLIC_LISTING_UPDATE', 'Vehicle', vehicle.id, { status: input.status }, { dealership: req.tenantId });
+    res.json(vehicle);
+  } catch (error) { next(error); }
 });
 app.get('/api/public-lead-settings', permit('settings'), async (req, res, next) => {
   try {

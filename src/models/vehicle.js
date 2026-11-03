@@ -17,6 +17,12 @@ export const Vehicle = mongoose.model(
       fuelType: String,
       transmission: String,
       odometer: Number,
+      publicListing: {
+        status: { type: String, enum: ['Draft', 'Published', 'Paused', 'Reserved', 'Sold', 'Withdrawn'], default: 'Draft', index: true },
+        price: Number,
+        summary: { type: String, maxlength: 1200 },
+        publishedAt: Date,
+      },
       lifecycle: { type: String, default: 'Enquiry Created', index: true },
       currentLocation: { type: mongoose.Schema.Types.ObjectId, ref: 'ParkingSlot' },
       activities: [activitySchema],
