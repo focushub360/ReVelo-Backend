@@ -11,11 +11,15 @@ const listingFilter = {
 };
 const listingDto = async (vehicle) => {
   const image = await Document.findOne({ vehicle: vehicle._id, status: 'Verified', mimeType: { $in: ['image/jpeg', 'image/png'] } }).sort({ createdAt: 1 }).select('_id');
+  const imageUrl = image ? `/api/public/vehicles/${vehicle._id}/image/${image._id}` : null;
   return {
     id: String(vehicle._id), make: vehicle.make, model: vehicle.model, variant: vehicle.variant,
     year: vehicle.year, fuelType: vehicle.fuelType, transmission: vehicle.transmission, odometer: vehicle.odometer,
     price: vehicle.publicListing?.price, summary: vehicle.publicListing?.summary,
-    imageUrl: image ? `/api/public/vehicles/${vehicle._id}/image/${image._id}` : null,
+    imageUrl,
+    // Retain the public image shape consumed by the restored storefront while exposing
+    // only the approved image URL—not private document metadata.
+    images: imageUrl ? [{ url: imageUrl, alt: `${vehicle.make || ''} ${vehicle.model || ''}`.trim() }] : [],
   };
 };
 router.get('/vehicles', async (req, res, next) => {
