@@ -23,3 +23,16 @@ export async function sendDealerInvitation({ email, name, dealershipName, token 
   });
   return { status: 'sent' };
 }
+
+export async function sendVehicleIntakeRejectionNotice({ email, name, registration, reason }) {
+  const client = mailer();
+  if (!client) return { status: 'not_configured' };
+  await client.sendMail({
+    from: env.SMTP_FROM,
+    to: email,
+    subject: `Update on your vehicle ${registration}`,
+    text: `Hello ${name},\n\nWe are unable to accept your vehicle ${registration} following its physical intake.\n\nReason: ${reason}\n\nIf you have questions, please contact the dealership.`,
+    html: `<p>Hello ${escapeHtml(name)},</p><p>We are unable to accept your vehicle <strong>${escapeHtml(registration)}</strong> following its physical intake.</p><p>Reason: ${escapeHtml(reason)}</p><p>If you have questions, please contact the dealership.</p>`,
+  });
+  return { status: 'sent' };
+}
