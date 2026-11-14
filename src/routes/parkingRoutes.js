@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { z } from 'zod';
 import { ParkingZone } from '../models/parkingZone.js';
 import { ParkingSlot } from '../models/parkingSlot.js';
+import { ParkingLayout } from '../models/parkingLayout.js';
 import { Movement } from '../models/movement.js';
 import { Vehicle } from '../models/vehicle.js';
 import { permit } from '../middleware/permit.js';
@@ -30,7 +31,7 @@ const slotInput = z.object({
   section: z.string().max(30).optional(),
   row: z.string().min(1).max(30),
   number: z.coerce.number().int().min(1).optional(),
-  type: z.enum(['parking', 'inspection', 'road-test', 'workshop', 'delivery']).optional(),
+  type: z.enum(['parking', 'inspection', 'road-test', 'workshop', 'selling', 'delivery']).optional(),
   capacity: z.coerce.number().int().min(1).max(10).optional(),
   vehicleConstraints: z.array(z.string()).optional(),
   status: z.enum(statuses).optional(),
@@ -142,6 +143,86 @@ router.patch('/parking/zones/:id', permit('settings:manage'), async (req, res, n
   }
 });
 router.get('/parking/slots', permit('parking:view'), paginatedQuery(ParkingSlot));
+const roadInput = z.object({ roadId: z.string().min(3).max(80), points: z.array(z.tuple([z.coerce.number(), z.coerce.number()])).min(2).max(300), width: z.coerce.number().min(10).max(600).default(100), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#334155'), label: z.string().max(80).optional() });
+const canvasInput = z.object({ width: z.coerce.number().min(600).max(10000), height: z.coerce.number().min(400).max(10000), gridSize: z.coerce.number().min(5).max(200).default(20) });
+const defaultLayout = { name: 'Main Parking Lot', canvas: { width: 2000, height: 1200, gridSize: 20 }, roads: [] };
+async function resolveParkingLot(req, requestedId) {
+  if (requestedId) {
+    const lot = await ParkingLayout.findOne(tenantFilter(req, { _id: requestedId }));
+    if (!lot) throw httpError(404, 'Parking lot not found');
+    return lot;
+  }
+  let lot = await ParkingLayout.findOne(tenantFilter(req, { name: defaultLayout.name }));
+  if (!lot) {
+    lot = await ParkingLayout.create({ dealership: req.tenantId, ...defaultLayout });
+    await ParkingSlot.updateMany(tenantFilter(req, { parkingLot: { $exists: false } }), { $set: { parkingLot: lot.id } });
+  }
+  return lot;
+}
+router.get('/parking/lots', permit('parking:view'), async (req, res, next) => {
+  try { res.json(await ParkingLayout.find(tenantFilter(req)).select('name canvas publishedAt createdAt').sort({ createdAt: 1 })); } catch (error) { next(error); }
+});
+router.post('/parking/lots', permit('parking:configure'), async (req, res, next) => {
+  try { const body = z.object({ name: z.string().trim().min(2).max(120), canvas: canvasInput.optional() }).parse(req.body); res.status(201).json(await ParkingLayout.create({ dealership: req.tenantId, name: body.name, canvas: body.canvas || defaultLayout.canvas, roads: [] })); } catch (error) { next(error); }
+});
+router.get('/parking/layout', permit('parking:view'), async (req, res, next) => {
+  try {
+    const layout = await resolveParkingLot(req, req.query.lotId);
+    const slots = await ParkingSlot.find(tenantFilter(req, { parkingLot: layout.id, 'layout.x': { $exists: true } })).populate('activeVehicle reservationVehicle').lean();
+    res.json({ layout, slots });
+  } catch (error) { next(error); }
+});
+router.put('/parking/layout', permit('parking:configure'), async (req, res, next) => {
+  try {
+    const body = z.object({ name: z.string().min(2).max(120), canvas: canvasInput, roads: z.array(roadInput).max(150) }).parse(req.body);
+    const lot = await resolveParkingLot(req, req.query.lotId);
+    const layout = await ParkingLayout.findOneAndUpdate(tenantFilter(req, { _id: lot.id }), { $set: body }, { new: true, runValidators: true });
+    res.json(layout);
+  } catch (error) { next(error); }
+});
+router.post('/parking/layout/publish', permit('parking:configure'), async (req, res, next) => {
+  try {
+    const lot = await resolveParkingLot(req, req.query.lotId);
+    const layout = await ParkingLayout.findOneAndUpdate(tenantFilter(req, { _id: lot.id }), { $set: { publishedAt: new Date(), publishedBy: req.user.id } }, { new: true });
+    res.json(layout);
+  } catch (error) { next(error); }
+});
+router.post('/parking/layout/slots', permit('parking:configure'), async (req, res, next) => {
+  try {
+    const body = z.object({
+      code: z.string().trim().min(2).max(30), type: z.enum(['parking', 'inspection', 'road-test', 'workshop', 'selling', 'delivery']).default('parking'),
+      x: z.coerce.number().min(0), y: z.coerce.number().min(0), width: z.coerce.number().min(20).max(800).default(60), height: z.coerce.number().min(20).max(800).default(110), rotation: z.coerce.number().min(-360).max(360).default(0), label: z.string().trim().max(80).optional(),
+    }).parse(req.body);
+    const layout = await resolveParkingLot(req, req.query.lotId);
+    const canvas = layout.canvas;
+    if (body.x + body.width > canvas.width || body.y + body.height > canvas.height) throw httpError(400, 'Plot must fit inside the current yard canvas');
+    const slot = await ParkingSlot.create({
+      dealership: req.tenantId, parkingLot: layout.id, code: body.code.toUpperCase(), zone: 'YARD', row: 'CANVAS', number: Math.floor(Date.now() % 1000000000),
+      type: body.type, status: 'Available', enabled: true,
+      layout: { x: body.x, y: body.y, width: body.width, height: body.height, rotation: body.rotation, label: body.label || body.code.toUpperCase() },
+    });
+    res.status(201).json(slot);
+  } catch (error) { handleSlotError(error, next); }
+});
+router.patch('/parking/layout/slots/:id', permit('parking:configure'), async (req, res, next) => {
+  try {
+    const body = z.object({ code: z.string().trim().min(2).max(30).optional(), type: z.enum(['parking', 'inspection', 'road-test', 'workshop', 'selling', 'delivery']).optional(), layout: z.object({ x: z.coerce.number().min(0), y: z.coerce.number().min(0), width: z.coerce.number().min(20).max(800), height: z.coerce.number().min(20).max(800), rotation: z.coerce.number().min(-360).max(360), label: z.string().max(80).optional() }).optional() }).parse(req.body);
+    const slot = await ParkingSlot.findOne(tenantFilter(req, { _id: req.params.id }));
+    if (!slot) throw httpError(404, 'Parking plot not found');
+    if (body.code) slot.code = body.code.toUpperCase(); if (body.type) slot.type = body.type; if (body.layout) slot.layout = body.layout;
+    await slot.save(); res.json(slot);
+  } catch (error) { handleSlotError(error, next); }
+});
+router.post('/parking/layout/slots/batch', permit('parking:configure'), async (req, res, next) => {
+  try {
+    const body = z.object({ x: z.coerce.number().min(0), y: z.coerce.number().min(0), count: z.coerce.number().int().min(1).max(100), direction: z.enum(['horizontal', 'vertical']), spacing: z.coerce.number().min(0).max(500), prefix: z.string().trim().max(20).default('P-'), width: z.coerce.number().min(20).max(800).default(60), height: z.coerce.number().min(20).max(800).default(110), rotation: z.coerce.number().min(-360).max(360).default(0), type: z.enum(['parking', 'inspection', 'road-test', 'workshop', 'selling', 'delivery']).default('parking') }).parse(req.body);
+    const layout = await ParkingLayout.findOne(tenantFilter(req)).lean(); const canvas = layout?.canvas?.width ? layout.canvas : defaultLayout.canvas;
+    const existing = await ParkingSlot.find(tenantFilter(req)).select('code').lean(); const labels = new Set(existing.map((slot) => slot.code));
+    const makeLabel = (index) => { let n = index; let candidate = `${body.prefix}${n}`.toUpperCase(); while (labels.has(candidate)) { n += 1; candidate = `${body.prefix}${n}`.toUpperCase(); } labels.add(candidate); return candidate; };
+    const docs = Array.from({ length: body.count }, (_, index) => { const x = body.x + (body.direction === 'horizontal' ? index * (body.width + body.spacing) : 0); const y = body.y + (body.direction === 'vertical' ? index * (body.height + body.spacing) : 0); if (x + body.width > canvas.width || y + body.height > canvas.height) throw httpError(400, 'Generated plots must fit inside the yard canvas'); const code = makeLabel(index + 1); return { dealership: req.tenantId, code, zone: 'YARD', row: 'CANVAS', number: Math.floor((Date.now() + index) % 1000000000), type: body.type, status: 'Available', enabled: true, layout: { x, y, width: body.width, height: body.height, rotation: body.rotation, label: code } }; });
+    res.status(201).json(await ParkingSlot.insertMany(docs));
+  } catch (error) { handleSlotError(error, next); }
+});
 router.post('/parking/slots', permit('parking:configure'), async (req, res, next) => {
   try {
     const input = slotInput.parse(req.body);

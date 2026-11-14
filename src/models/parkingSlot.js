@@ -3,6 +3,7 @@ import { stamped } from './activity.js';
 const schema = new mongoose.Schema(
   {
     dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
+    parkingLot: { type: mongoose.Schema.Types.ObjectId, ref: 'ParkingLayout', index: true },
     code: { type: String, unique: true, required: true },
     zone: { type: String, required: true, index: true },
     section: String,
@@ -26,6 +27,15 @@ const schema = new mongoose.Schema(
     reservedUntil: Date,
     occupiedAt: Date,
     enabled: { type: Boolean, default: true },
+    layout: {
+      x: { type: Number, min: 0 },
+      y: { type: Number, min: 0 },
+      width: { type: Number, min: 1, default: 60 },
+      height: { type: Number, min: 1, default: 110 },
+      rotation: { type: Number, default: 0 },
+      label: { type: String, maxlength: 80 },
+      section: { type: String, maxlength: 80 },
+    },
   },
   stamped
 );

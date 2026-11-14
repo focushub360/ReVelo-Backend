@@ -57,7 +57,9 @@ router.post(
       }
       if (!/^[+0-9 ()-]{7,30}$/.test(textAnswer('phone'))) throw httpError(400, 'Enter a valid mobile number');
       if (!/^\d{6}$/.test(textAnswer('postalCode'))) throw httpError(400, 'Enter a valid 6-digit pincode');
-      if (textAnswer('email') && !z.string().email().safeParse(textAnswer('email')).success) throw httpError(400, 'Enter a valid email address');
+      const email = textAnswer('email').toLowerCase();
+      if (!email) throw httpError(400, 'Email address is required');
+      if (!z.string().email().safeParse(email).success) throw httpError(400, 'Enter a valid email address');
       const selectedLocation = (config?.locations || []).find((location) => String(location._id) === input.locationId && location.active);
       if (!selectedLocation) throw httpError(400, 'The selected location is not currently available');
       const dealership = await Dealership.findOne({
@@ -66,15 +68,18 @@ router.post(
         'subscription.status': 'Active',
       });
       if (!dealership) throw httpError(400, 'The selected location is not currently available');
-      const normalizedRegistration = textAnswer('registration').toUpperCase().replace(/\s+/g, '');
-      let vehicle = await Vehicle.findOne({ dealership: dealership.id, registration: normalizedRegistration });
-      if (!vehicle) {
+      const normalizedRegistration = textAnswer('registration').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!normalizedRegistration) throw httpError(400, 'Enter a valid vehicle registration number');
+      const existingVehicle = await Vehicle.findOne({ registration: normalizedRegistration }).select('_id').lean();
+      if (existingVehicle) throw httpError(409, 'This vehicle registration has already been submitted. Please contact ReVelo for help.');
+
+      let vehicle;
+      let seller;
+      let createdSeller;
+      let enquiry;
+      try {
         vehicle = await Vehicle.create({
-<<<<<<< Updated upstream
           make: textAnswer('make'), model: textAnswer('model'), fuelType: textAnswer('fuelType'), transmission: textAnswer('transmission'),
-=======
-          make: textAnswer('make'), model: textAnswer('model'),
->>>>>>> Stashed changes
           year: answer('year') ? Number(answer('year')) : undefined,
           odometer: answer('odometer') ? Number(answer('odometer')) : undefined,
           registration: normalizedRegistration,
@@ -83,56 +88,53 @@ router.post(
           lifecycle: 'Enquiry Created',
           activities: [{ type: 'public-enquiry', message: 'Vehicle submitted through public seller form' }],
         });
-      }
-<<<<<<< Updated upstream
-      const seller = await Person.create({
-        dealership: dealership.id,
-        customerReference: id('SEL'),
-        name: textAnswer('name'), phone: textAnswer('phone'), email: textAnswer('email') || undefined,
-        kind: 'seller',
-      });
-=======
-      // A returning seller may submit more than one vehicle. Reuse their
-      // dealership-scoped external party instead of creating an identity per enquiry.
-      const sellerMatch = { dealership: dealership.id, kind: 'seller', phone: textAnswer('phone') };
-      if (textAnswer('email')) sellerMatch.email = textAnswer('email').toLowerCase();
-      let seller = await Person.findOne(sellerMatch);
-      if (!seller) {
-        seller = await Person.create({
+        const sellerMatch = { dealership: dealership.id, kind: 'seller', phone: textAnswer('phone') };
+        if (email) sellerMatch.email = email;
+        seller = await Person.findOne(sellerMatch);
+        if (!seller) {
+          seller = await Person.create({
+            dealership: dealership.id,
+            customerReference: id('SEL'),
+            name: textAnswer('name'), phone: textAnswer('phone'), email,
+            kind: 'seller',
+          });
+          createdSeller = seller;
+        }
+        enquiry = await Enquiry.create({
           dealership: dealership.id,
-          customerReference: id('SEL'),
-          name: textAnswer('name'), phone: textAnswer('phone'), email: textAnswer('email') || undefined,
-          kind: 'seller',
+          enquiryCode: id('ENQ'),
+          type: 'seller',
+          vehicle: vehicle.id,
+          person: seller.id,
+          source: 'Public sell-your-car form',
+          askingPrice: answer('expectedPrice') ? Number(answer('expectedPrice')) : undefined,
+          declaredAccidentHistory: textAnswer('previousAccidents') || undefined,
+          history: [{ type: 'public-submission', message: 'Seller submitted initial vehicle details', at: new Date() }],
+          publicSubmission: {
+            registration: normalizedRegistration,
+            nearestLocation: { city: selectedLocation.label, state: dealership.address?.state },
+            address: { line1: textAnswer('line1'), locality: textAnswer('locality'), city: textAnswer('city'), state: textAnswer('state'), postalCode: textAnswer('postalCode') },
+            ownerCount: answer('ownerCount') ? Number(answer('ownerCount')) || undefined : undefined,
+            isFirstOwner: booleanAnswer('isFirstOwner'),
+            rcAvailable: booleanAnswer('rcAvailable'),
+            insuranceRenewalDate: answer('insuranceRenewalDate') ? new Date(answer('insuranceRenewalDate')) : undefined,
+            hasActiveLoan: booleanAnswer('hasActiveLoan'),
+            loanProvider: textAnswer('loanProvider') || undefined,
+            customFields: fields.filter((field) => !DEFAULT_PUBLIC_FIELDS.some((standard) => standard.key === field.key)).map((field) => ({ fieldId: String(field._id), label: field.label, value: answer(field.key) })).filter((field) => field.value !== undefined && field.value !== ''),
+            consentToContact: true,
+            proofStatus: 'Not Requested',
+          },
         });
+      } catch (error) {
+        const duplicateRegistration = error?.code === 11000 &&
+          (error.keyPattern?.['publicSubmission.registration'] || error.keyValue?.['publicSubmission.registration']);
+        if (!duplicateRegistration) throw error;
+        await Promise.all([
+          vehicle && Vehicle.deleteOne({ _id: vehicle.id }),
+          createdSeller && Person.deleteOne({ _id: createdSeller.id }),
+        ].filter(Boolean));
+        throw httpError(409, 'This vehicle registration has already been submitted. Please contact ReVelo for help.');
       }
->>>>>>> Stashed changes
-      const enquiry = await Enquiry.create({
-        dealership: dealership.id,
-        enquiryCode: id('ENQ'),
-        type: 'seller',
-        vehicle: vehicle.id,
-        person: seller.id,
-        source: 'Public sell-your-car form',
-<<<<<<< Updated upstream
-        askingPrice: answer('expectedPrice') ? Number(answer('expectedPrice')) : undefined,
-=======
->>>>>>> Stashed changes
-        declaredAccidentHistory: textAnswer('previousAccidents') || undefined,
-        history: [{ type: 'public-submission', message: 'Seller submitted initial vehicle details', at: new Date() }],
-        publicSubmission: {
-          nearestLocation: { city: selectedLocation.label, state: dealership.address?.state },
-          address: { line1: textAnswer('line1'), locality: textAnswer('locality'), city: textAnswer('city'), state: textAnswer('state'), postalCode: textAnswer('postalCode') },
-          ownerCount: answer('ownerCount') ? Number(answer('ownerCount')) || undefined : undefined,
-          isFirstOwner: booleanAnswer('isFirstOwner'),
-          rcAvailable: booleanAnswer('rcAvailable'),
-          insuranceRenewalDate: answer('insuranceRenewalDate') ? new Date(answer('insuranceRenewalDate')) : undefined,
-          hasActiveLoan: booleanAnswer('hasActiveLoan'),
-          loanProvider: textAnswer('loanProvider') || undefined,
-          customFields: fields.filter((field) => !DEFAULT_PUBLIC_FIELDS.some((standard) => standard.key === field.key)).map((field) => ({ fieldId: String(field._id), label: field.label, value: answer(field.key) })).filter((field) => field.value !== undefined && field.value !== ''),
-          consentToContact: true,
-          proofStatus: 'Not Requested',
-        },
-      });
       await OwnershipPeriod.create({ vehicle: vehicle.id, owner: seller.id, source: 'Public seller declaration' });
       await audit(Audit, undefined, 'PUBLIC_SELLER_ENQUIRY', 'Enquiry', enquiry.id, {
         dealership: dealership.id,

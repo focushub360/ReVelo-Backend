@@ -1,8 +1,6 @@
 import mongoose from 'mongoose';
 import { stamped, activitySchema } from './activity.js';
-export const Enquiry = mongoose.model(
-  'Enquiry',
-  new mongoose.Schema(
+const enquirySchema = new mongoose.Schema(
     {
       dealership: { type: mongoose.Schema.Types.ObjectId, ref: 'Dealership', index: true },
       enquiryCode: { type: String, unique: true },
@@ -23,6 +21,7 @@ export const Enquiry = mongoose.model(
       nextAction: String,
       notes: String,
       publicSubmission: {
+        registration: String,
         nearestLocation: { city: String, state: String },
         address: { line1: String, locality: String, city: String, state: String, postalCode: String },
         ownerCount: Number,
@@ -42,5 +41,17 @@ export const Enquiry = mongoose.model(
       history: [activitySchema],
     },
     stamped
-  )
 );
+
+enquirySchema.index(
+  { 'publicSubmission.registration': 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      source: 'Public sell-your-car form',
+      'publicSubmission.registration': { $type: 'string' },
+    },
+  }
+);
+
+export const Enquiry = mongoose.model('Enquiry', enquirySchema);

@@ -24,11 +24,22 @@ const listingDto = async (vehicle) => {
 };
 router.get('/vehicles', async (req, res, next) => {
   try {
-    const q = String(req.query.q || '').trim();
+    const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 12, 1), 48);
+    const q = String(req.query.search || req.query.q || '').trim().slice(0, 100);
     const filter = { ...listingFilter };
-    if (q) filter.$and = [{ $or: ['make', 'model', 'variant', 'fuelType', 'transmission'].map((field) => ({ [field]: { $regex: q, $options: 'i' } })) }];
-    const vehicles = await Vehicle.find(filter).sort({ 'publicListing.publishedAt': -1, updatedAt: -1 }).limit(60);
-    res.json({ items: await Promise.all(vehicles.map(listingDto)) });
+    if (q) {
+      const escapedQuery = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.$and = [{ $or: ['make', 'model', 'variant', 'fuelType', 'transmission'].map((field) => ({ [field]: { $regex: escapedQuery, $options: 'i' } })) }];
+    }
+    const [vehicles, total] = await Promise.all([
+      Vehicle.find(filter)
+        .sort({ 'publicListing.publishedAt': -1, updatedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
+      Vehicle.countDocuments(filter),
+    ]);
+    res.json({ items: await Promise.all(vehicles.map(listingDto)), page, limit, total, pages: Math.ceil(total / limit) });
   } catch (error) { next(error); }
 });
 router.get('/vehicles/:id', async (req, res, next) => {
