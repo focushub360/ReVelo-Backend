@@ -31,6 +31,13 @@ export async function savePrivateDocument(buffer) {
   await fs.writeFile(path.join(root, key), buffer, { flag: 'wx' });
   return { storageKey: key, mimeType: detected.mime, extension: detected.extension };
 }
+export async function savePrivateImage(buffer) {
+  const detected = detectDocument(buffer);
+  if (detected.mime !== 'image/jpeg' && detected.mime !== 'image/png') {
+    throw httpError(400, 'Only genuine JPEG and PNG images are allowed');
+  }
+  return savePrivateDocument(buffer);
+}
 export async function readPrivateDocument(key) {
   if (!/^[A-Z0-9-]+\.(pdf|jpg|png)$/i.test(key)) throw httpError(400, 'Invalid storage reference');
   try {
